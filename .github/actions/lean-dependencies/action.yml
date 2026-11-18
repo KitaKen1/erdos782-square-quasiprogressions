@@ -1,0 +1,51 @@
+name: Prepare pinned Lean dependencies
+description: Install Lean and restore the pinned Mathlib, Stacks and Mordell outputs
+outputs:
+  public-cache-hit:
+    description: Whether the pinned public cache was found in GitHub Actions storage
+    value: ${{ steps.public-cache.outputs.cache-hit }}
+  public-cache-key:
+    description: Expected GitHub Actions cache key for the public seed
+    value: ${{ steps.public-cache.outputs.cache-primary-key }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      name: Install elan
+      run: |
+        installer="$RUNNER_TEMP/erdos782-elan-init.sh"
+        curl --proto '=https' --tlsv1.2 -fsSL https://elan.lean-lang.org/elan-init.sh -o "$installer"
+        sh "$installer" -y --default-toolchain none --no-modify-path
+        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+    - shell: bash
+      name: Check runner resources
+      run: |
+        if ! command -v zstd >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install -y zstd
+        fi
+        df -h /
+        free -h
+        available=$(df -PB1 / | awk 'NR==2 {print $4}')
+        swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
+        if (( available >= 55 * 1024**3 && swap < 8 * 1024**2 )); then
+          sudo fallocate -l 12G /var/tmp/lean-ci.swap
+          sudo chmod 600 /var/tmp/lean-ci.swap
+          sudo mkswap /var/tmp/lean-ci.swap
+          sudo swapon /var/tmp/lean-ci.swap || printf 'Runner swap could not be enabled.\n'
+        fi
+    - shell: bash
+      name: Fetch pinned Mathlib outputs
+      working-directory: lean
+      run: lake exe cache get Mathlib
+    - uses: actions/cache/restore@v6
+      id: public-cache
+      with:
+        path: |
+          lean/.lake/packages/Stacks/.lake/build
+          lean/.lake/packages/Mordell/.lake/build
+        key: fc782-public-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('verification/axiom-cache.json') }}
+    - shell: bash
+      name: Restore the pinned public cache if needed
+      if: steps.public-cache.outputs.cache-hit != 'true'
+      run: bash verification/restore-axiom-cache.sh

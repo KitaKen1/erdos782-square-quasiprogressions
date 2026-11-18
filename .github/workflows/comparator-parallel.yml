@@ -1,0 +1,187 @@
+name: Parallel Lean comparator
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/fc-782-unconditional]
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      wave0: ${{ steps.plan.outputs.wave0 }}
+      wave1: ${{ steps.plan.outputs.wave1 }}
+      wave2: ${{ steps.plan.outputs.wave2 }}
+      wave3: ${{ steps.plan.outputs.wave3 }}
+      wave4: ${{ steps.plan.outputs.wave4 }}
+      wave5: ${{ steps.plan.outputs.wave5 }}
+      wave6: ${{ steps.plan.outputs.wave6 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check both targets against the pinned FC source
+        run: python3 verification/prepare_sources.py --check
+      - uses: ./.github/actions/lean-dependencies
+        id: deps
+      - name: Save the public cache for the compiler jobs
+        if: steps.deps.outputs.public-cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            lean/.lake/packages/Stacks/.lake/build
+            lean/.lake/packages/Mordell/.lake/build
+          key: ${{ steps.deps.outputs.public-cache-key }}
+      - name: Plan the dependency builds
+        id: plan
+        run: python3 verification/dependency_shards.py plan "$RUNNER_TEMP/plan.json" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fc782-build-plan
+          path: ${{ runner.temp }}/plan.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 2
+
+  wave0:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave0) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 0
+      shard: ${{ matrix.shard }}
+
+  wave1:
+    needs: [prepare, wave0]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave1) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 1
+      shard: ${{ matrix.shard }}
+
+  wave2:
+    needs: [prepare, wave1]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave2) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 2
+      shard: ${{ matrix.shard }}
+
+  wave3:
+    needs: [prepare, wave2]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave3) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 3
+      shard: ${{ matrix.shard }}
+
+  wave4:
+    needs: [prepare, wave3]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave4) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 4
+      shard: ${{ matrix.shard }}
+
+  wave5:
+    needs: [prepare, wave4]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave5) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 5
+      shard: ${{ matrix.shard }}
+
+  wave6:
+    needs: [prepare, wave5]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave6) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 6
+      shard: ${{ matrix.shard }}
+
+  verify:
+    needs: wave6
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      LEAN_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check both targets against the pinned FC source
+        run: python3 verification/prepare_sources.py --check
+      - uses: ./.github/actions/lean-dependencies
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fc782-wave-*
+          path: ${{ runner.temp }}/lean-deltas
+      - name: Restore compiled dependencies
+        run: bash verification/restore-shards.sh 7 "$RUNNER_TEMP/lean-deltas"
+      - name: Set up the comparator sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apparmor bubblewrap zstd
+          sandbox=$(command -v bwrap)
+          probe=(--ro-bind / / --dev /dev --proc /proc --unshare-all -- /usr/bin/true)
+          if ! "$sandbox" "${probe[@]}"; then
+            sudo install -m 0755 "$sandbox" /usr/local/bin/erdos782-bwrap
+            sandbox=/usr/local/bin/erdos782-bwrap
+            sudo apparmor_parser -r <<'APPARMOR'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile erdos782-bwrap /usr/local/bin/erdos782-bwrap flags=(unconfined) {
+            userns,
+          }
+          APPARMOR
+            "$sandbox" "${probe[@]}"
+          fi
+          echo "COMPARATOR_BWRAP=$sandbox" >> "$GITHUB_ENV"
+      - name: Build and audit the exact candidate
+        run: |
+          mkdir -p verification/results
+          (cd lean && lake build +Comparator.Candidate) 2>&1 | tee verification/results/source-build.log
+          (cd lean && lake env lean ../verification/Check.lean) | tee verification/results/source-statement.log
+      - name: Export the proof
+        run: |
+          bash verification/export-solution.sh "$RUNNER_TEMP/erdos782-proof.ndjson.gz"
+          sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson.gz" | cut -d ' ' -f 1 > verification/results/solution.sha256
+          gzip -dc "$RUNNER_TEMP/erdos782-proof.ndjson.gz" > "$RUNNER_TEMP/erdos782-proof.ndjson"
+      - name: Verify the unconditional declaration with Lean and nanoda
+        run: python3 verification/verify.py --solution-export "$RUNNER_TEMP/erdos782-proof.ndjson"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: comparator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/results/
+          retention-days: 90
+          if-no-files-found: ignore

@@ -2,8 +2,6 @@ name: Lean comparator
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ci/fc-782-unconditional]
 
 permissions:
   contents: read

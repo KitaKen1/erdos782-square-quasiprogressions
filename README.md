@@ -50,7 +50,7 @@ The bound also holds for $k\le N$. It depends only on $C$, which proves the conj
 
 ## Appendix: Verification by Lean Comparator on GitHub CI runner
 
-Run the [Lean comparator workflow](.github/workflows/comparator.yml) manually from the Actions tab. It checks the pinned FC snapshot and builds the reference statement in a project with the pinned Mathlib dependency. The runner builds the candidate using the pinned public Stacks and Mordell cache, exports the proof with Lean, and compares it against that reference. Comparator permits only `propext`, `Classical.choice`, and `Quot.sound`. It checks the exported proof with nanoda and Lean’s kernel. A fresh Lean kernel also replays the export. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
+The [parallel Lean comparator workflow](.github/workflows/comparator-parallel.yml) runs on pushes to this branch. The [single-runner workflow](.github/workflows/comparator.yml) is available from the Actions tab. It checks the pinned FC snapshot and builds the reference statement in a project with the pinned Mathlib dependency. The workflows use the pinned public Stacks and Mordell cache. The parallel workflow builds the remaining dependencies in topological order across its jobs. The final job builds the candidate, exports the proof with Lean, and compares it against the reference. Comparator permits only `propext`, `Classical.choice`, and `Quot.sound`. It checks the exported proof with nanoda and Lean’s kernel. A fresh Lean kernel also replays the export. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
 
 ### Certification within 90 days
 

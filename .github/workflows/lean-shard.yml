@@ -8,7 +8,7 @@ on:
       shard:
         type: number
         required: true
-      seed-run-id:
+      seed-run-ids:
         type: string
         default: ''
 
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
-      LEAN_NUM_THREADS: "2"
+      LEAN_NUM_THREADS: "1"
       BUILD_WAVE: ${{ inputs.wave }}
       BUILD_SHARD: ${{ inputs.shard }}
     steps:
@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/lean-dependencies
         with:
-          seed-run-id: ${{ inputs.seed-run-id }}
+          seed-run-ids: ${{ inputs.seed-run-ids }}
       - uses: actions/download-artifact@v8
         with:
           name: fc782-build-plan

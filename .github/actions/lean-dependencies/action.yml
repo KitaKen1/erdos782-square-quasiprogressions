@@ -1,8 +1,8 @@
 name: Prepare pinned Lean dependencies
 description: Install Lean and restore the pinned Mathlib, Stacks and Mordell outputs
 inputs:
-  seed-run-id:
-    description: Previous parallel run supplying dependency outputs
+  seed-run-ids:
+    description: Space-delimited earlier parallel runs supplying dependency outputs
     default: ''
 outputs:
   public-cache-hit:
@@ -32,8 +32,8 @@ runs:
         free -h
         available=$(df -PB1 / | awk 'NR==2 {print $4}')
         swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
-        if (( available >= 55 * 1024**3 && swap < 8 * 1024**2 )); then
-          sudo fallocate -l 12G /var/tmp/lean-ci.swap
+        if (( available >= 65 * 1024**3 && swap < 16 * 1024**2 )); then
+          sudo fallocate -l 20G /var/tmp/lean-ci.swap
           sudo chmod 600 /var/tmp/lean-ci.swap
           sudo mkswap /var/tmp/lean-ci.swap
           sudo swapon /var/tmp/lean-ci.swap || printf 'Runner swap could not be enabled.\n'
@@ -43,7 +43,18 @@ runs:
       working-directory: lean
       run: lake exe cache get Mathlib
     - uses: actions/cache/restore@v6
+      id: single-run-cache
+      if: inputs.seed-run-ids != ''
+      with:
+        path: |
+          lean/.lake/packages/Stacks/.lake/build
+          lean/.lake/packages/Mordell/.lake/build
+        key: fc782-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean/lean-toolchain', 'lean/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          fc782-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean/lean-toolchain', 'lean/lake-manifest.json') }}-
+    - uses: actions/cache/restore@v6
       id: public-cache
+      if: steps.single-run-cache.outputs.cache-matched-key == ''
       with:
         path: |
           lean/.lake/packages/Stacks/.lake/build
@@ -51,18 +62,19 @@ runs:
         key: fc782-public-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('verification/axiom-cache.json') }}
     - shell: bash
       name: Restore the pinned public cache if needed
-      if: steps.public-cache.outputs.cache-hit != 'true'
+      if: steps.single-run-cache.outputs.cache-matched-key == '' && steps.public-cache.outputs.cache-hit != 'true'
       run: bash verification/restore-axiom-cache.sh
-    - uses: actions/download-artifact@v8
-      if: inputs.seed-run-id != ''
-      with:
-        github-token: ${{ github.token }}
-        run-id: ${{ inputs.seed-run-id }}
-        pattern: fc782-wave-*
-        path: ${{ runner.temp }}/lean-seed
     - shell: bash
-      name: Restore compiler outputs from the previous run
-      if: inputs.seed-run-id != ''
+      name: Restore compiler outputs from earlier parallel runs
+      if: inputs.seed-run-ids != ''
+      env:
+        SEED_RUN_IDS: ${{ inputs.seed-run-ids }}
+        GH_TOKEN: ${{ github.token }}
       run: |
-        test -d "$RUNNER_TEMP/lean-seed"
-        bash "$GITHUB_WORKSPACE/verification/restore-shards.sh" 7 "$RUNNER_TEMP/lean-seed"
+        read -r -a seed_runs <<< "$SEED_RUN_IDS"
+        for seed_run in "${seed_runs[@]}"; do
+          [[ "$seed_run" =~ ^[1-9][0-9]*$ ]]
+          directory="$RUNNER_TEMP/lean-seed/$seed_run"
+          gh run download "$seed_run" --repo "$GITHUB_REPOSITORY" --pattern 'fc782-wave-*' --dir "$directory"
+          bash "$GITHUB_WORKSPACE/verification/restore-shards.sh" 7 "$directory"
+        done

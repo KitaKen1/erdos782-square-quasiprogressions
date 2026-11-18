@@ -2,8 +2,8 @@ name: Parallel Lean comparator
 on:
   workflow_dispatch:
     inputs:
-      seed-run-id:
-        description: Optional earlier run whose compiled dependency shards should be reused
+      seed-run-ids:
+        description: Space-delimited IDs for completed runs whose compiled dependencies should be reused
         type: string
   push:
     branches: [ci/fc-782-unconditional]
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      seed-run-id: ${{ steps.seed.outputs.run-id }}
+      seed-run-ids: ${{ steps.seed.outputs.run-ids }}
       wave0: ${{ steps.plan.outputs.wave0 }}
       wave1: ${{ steps.plan.outputs.wave1 }}
       wave2: ${{ steps.plan.outputs.wave2 }}
@@ -35,44 +35,47 @@ jobs:
           persist-credentials: false
       - name: Check both targets against the pinned FC source
         run: python3 verification/prepare_sources.py --check
-      - name: Identify the earlier dependency build
+      - name: Identify the earlier dependency builds
         id: seed
         env:
-          DISPATCH_SEED: ${{ inputs.seed-run-id }}
+          DISPATCH_SEED: ${{ inputs.seed-run-ids }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          seed_run="$DISPATCH_SEED"
+          seed_list="$DISPATCH_SEED"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            seed_run=$(git log -1 --format=%B | git interpret-trailers --parse |
-              sed -n 's/^Resume-CI-Run: //p')
+            seed_list=$(git log -1 --format=%B | git interpret-trailers --parse |
+              sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
           fi
-          if [[ -z "$seed_run" ]]; then
+          if [[ -z "$seed_list" ]]; then
             exit 0
           fi
-          if [[ ! "$seed_run" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Expected a numeric GitHub Actions run ID." >&2
+          if [[ ! "$seed_list" =~ ^[1-9][0-9]*([[:blank:]]+[1-9][0-9]*)*$ ]]; then
+            echo "Expected numeric GitHub Actions run IDs." >&2
             exit 1
           fi
-          seed_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$seed_run" --jq '
-            select(.status == "completed"
-                   and .head_branch == "ci/fc-782-unconditional"
-                   and .path == ".github/workflows/comparator-parallel.yml"
-                   and (.event == "push" or .event == "workflow_dispatch"))
-            | .head_sha')
-          if [[ ! "$seed_commit" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "The seed must be a completed run of this workflow on the CI branch." >&2
-            exit 1
-          fi
-          git fetch --depth=1 origin "$seed_commit"
-          git diff --exit-code "$seed_commit" HEAD -- lean/lean-toolchain lean/lake-manifest.json \
-            verification/axiom-cache.json verification/dependency_shards.py
-          echo "run-id=$seed_run" >> "$GITHUB_OUTPUT"
+          read -r -a seed_runs <<< "$seed_list"
+          for seed_run in "${seed_runs[@]}"; do
+            seed_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$seed_run" --jq '
+              select(.status == "completed"
+                     and .head_branch == "ci/fc-782-unconditional"
+                     and .path == ".github/workflows/comparator-parallel.yml"
+                     and (.event == "push" or .event == "workflow_dispatch"))
+              | .head_sha')
+            if [[ ! "$seed_commit" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "The seed must be a completed run of this workflow on the CI branch." >&2
+              exit 1
+            fi
+            git fetch --depth=1 origin "$seed_commit"
+            git diff --exit-code "$seed_commit" HEAD -- lean/lean-toolchain lean/lake-manifest.json \
+              verification/axiom-cache.json verification/dependency_shards.py
+          done
+          echo "run-ids=${seed_runs[*]}" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/lean-dependencies
         id: deps
         with:
-          seed-run-id: ${{ steps.seed.outputs.run-id }}
+          seed-run-ids: ${{ steps.seed.outputs.run-ids }}
       - name: Save the public cache for the compiler jobs
-        if: steps.seed.outputs.run-id == '' && steps.deps.outputs.public-cache-hit != 'true'
+        if: steps.seed.outputs.run-ids == '' && steps.deps.outputs.public-cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -100,7 +103,7 @@ jobs:
     with:
       wave: 0
       shard: ${{ matrix.shard }}
-      seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave1:
     needs: [prepare, wave0]
@@ -112,7 +115,7 @@ jobs:
     with:
       wave: 1
       shard: ${{ matrix.shard }}
-      seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave2:
     needs: [prepare, wave1]
@@ -124,7 +127,7 @@ jobs:
     with:
       wave: 2
       shard: ${{ matrix.shard }}
-      seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave3:
     needs: [prepare, wave2]
@@ -136,7 +139,7 @@ jobs:
     with:
       wave: 3
       shard: ${{ matrix.shard }}
-      seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave4:
     needs: [prepare, wave3]
@@ -148,7 +151,7 @@ jobs:
     with:
       wave: 4
       shard: ${{ matrix.shard }}
-      seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave5:
     needs: [prepare, wave4]
@@ -160,7 +163,7 @@ jobs:
     with:
       wave: 5
       shard: ${{ matrix.shard }}
-      seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave6:
     needs: [prepare, wave5]
@@ -172,7 +175,7 @@ jobs:
     with:
       wave: 6
       shard: ${{ matrix.shard }}
-      seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   verify:
     needs: [prepare, wave6]
@@ -188,7 +191,7 @@ jobs:
         run: python3 verification/prepare_sources.py --check
       - uses: ./.github/actions/lean-dependencies
         with:
-          seed-run-id: ${{ needs.prepare.outputs.seed-run-id }}
+          seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
       - uses: actions/download-artifact@v8
         with:
           pattern: fc782-wave-*

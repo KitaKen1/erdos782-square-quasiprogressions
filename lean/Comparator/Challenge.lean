@@ -7,8 +7,10 @@ public import Comparator.Spec
 namespace Erdos782
 
 set_option warn.sorry false in
-theorem part_i_negative (walk : PlanarWalkInput) (finitePoints : RationalPointInput) :
-    ¬ ArbitrarilyLongSquareQuasiProgressions := by
+theorem erdos_782.parts.i_neg
+    (walk : PlanarWalkInput) (finitePoints : RationalPointInput) :
+    ¬ (∃ C : ℕ, 0 < C ∧ ∀ k : ℕ,
+      ContainsQuasiProgression {n : ℕ | IsSquare n} C k) := by
   sorry
 
 end Erdos782

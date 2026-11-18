@@ -1,6 +1,6 @@
-✔ [988/992] Built Comparator.Spec (7.9s)
-✔ [991/1010] Built Comparator.Challenge (1.0s)
-✔ [1009/1010] Built Erdos782QuasiProgressions (1.0s)
-ℹ [1010/1010] Built Comparator.Candidate (1.0s)
-info: Comparator/Candidate.lean:16:0: 'Erdos782.part_i_negative' depends on axioms: [propext, Classical.choice, Quot.sound]
-Build completed successfully (1010 jobs).
+✔ [377/378] Built Comparator.FCStatement (5.0s)
+✔ [989/994] Built Comparator.Spec (12s)
+✔ [992/1011] Built Comparator.Challenge (2.4s)
+ℹ [1011/1011] Built Comparator.Candidate (2.3s)
+info: Comparator/Candidate.lean:18:0: 'Erdos782.erdos_782.parts.i_neg' depends on axioms: [propext, Classical.choice, Quot.sound]
+Build completed successfully (1011 jobs).

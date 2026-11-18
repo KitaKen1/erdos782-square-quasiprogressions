@@ -7,6 +7,18 @@
 
 This repository answers **no** to part (i), with the reduction to Gerver–Ramsey and Faltings checked in Lean. [Lean theorem](lean/Comparator/Candidate.lean#L10)
 
+### Exact Formal Conjectures target
+
+The proposition under `¬` is the type of FC's `erdos_782.parts.i`. The generator copies that type and the original `ContainsQuasiProgression` definition from the pinned FC source. The two arguments state the forms of Gerver–Ramsey and Faltings used in the proof sketch. [Pinned FC source](verification/reference/782.lean#L77-L89) · [Generated Lean module](lean/Comparator/FCStatement.lean)
+
+```lean
+theorem erdos_782.parts.i_neg
+    (walk : PlanarWalkInput) (finitePoints : RationalPointInput) :
+    ¬ (∃ C : ℕ, 0 < C ∧ ∀ k : ℕ,
+      ContainsQuasiProgression {n : ℕ | IsSquare n} C k) :=
+  Erdos782Reduction.not_exists_width walk finitePoints
+```
+
 ### Mathematical Explanation (AI generated)
 
 **1. Extract six collinear points from the final block.** Fix $C$ and take $N=N(C)$ from Gerver and Ramsey's theorem for six collinear points, with step set $\{(1,j):0\le j\le C\}$. Consider a sequence of length $k\ge N+1$ and let $m=k-1-N$. For $0\le i\le N$, put $e_i=x_{m+i}-(m+i)d$. The points $(i,e_i)$ form a lattice walk with the required steps. Six points lie on one line, at indices $b+h_1,\ldots,b+h_6$ with $0=h_1<h_2<\cdots<h_6\le N$. The slope $a$ of that line lies in $[0,C]$ because each increment of $e_i$ lies in that interval. Set $q=d+a$ and $X=x_{m+b}$. Then $q$ is positive and rational, and $x_{m+b+h_j}=X+qh_j$ for every $j$. [Gerver–Ramsey, Theorem 1](https://msp.org/pjm/1979/83-2/pjm-v83-n2-p08-s.pdf)
@@ -39,15 +51,13 @@ The bound also holds for $k\le N$. It depends only on $C$, which proves the conj
 
 ## Appendix: Verification by Lean Comparator on GitHub CI runner
 
-Run the [Lean comparator workflow](.github/workflows/comparator.yml) manually from the Actions tab. It checks `Erdos782.part_i_negative` on Ubuntu 24.04. Lake uses bubblewrap to build and export the challenge and candidate separately. Comparator matches the candidate to the [challenge statement](lean/Comparator/Challenge.lean), allows only `propext`, `Classical.choice`, and `Quot.sound`, and requires both nanoda and Lean's kernel to accept the candidate. A fresh Lean kernel then replays the candidate module. [Comparator configuration](lean/comparator.json)
-
-The challenge is the negation of FC's statement under the two explicit mathematical hypotheses `PlanarWalkInput` and `RationalPointInput`. The proof sketch justifies those hypotheses using Gerver–Ramsey and Faltings. [Challenge specification](lean/Comparator/Spec.lean)
+Run the [Lean comparator workflow](.github/workflows/comparator.yml) manually from the Actions tab. It checks the checksum of the pinned FC file and compares the proposition under `¬` in both modules with the original. Lake uses bubblewrap on Ubuntu 24.04 to build and export the challenge and candidate separately. Comparator checks `Erdos782.erdos_782.parts.i_neg`, permits only `propext`, `Classical.choice`, and `Quot.sound`, and requires both nanoda and Lean's kernel to accept the candidate. A fresh Lean kernel then replays the module. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
 
 ### Certification within 90 days
 
-Each workflow attempt uploads an artifact named `comparator-<run-id>-<attempt>` with 90-day retention. A successful attempt contains both kernel verdicts in `fc-target.log`, the scope and result in `result.json`, and the fresh replay log and status.
+Each workflow attempt uploads an artifact named `comparator-<run-id>-<attempt>` with 90-day retention. A successful attempt contains the checked Lean signature in `statement.log`, both kernel verdicts in `fc-target.log`, the result in `result.json`, and the fresh replay log and status.
 
-On 18 November 2026, the trusted local macOS run passed the comparator check with nanoda and Lean, followed by a fresh kernel replay. [Local comparator log](verification/logs/fc-target.log) · [Local receipt](verification/logs/result.json) · [Fresh replay log](verification/logs/replay.log)
+On 18 November 2026, the trusted local macOS run passed the comparator check with nanoda and Lean, followed by a fresh kernel replay. [Checked Lean signature](verification/logs/statement.log) · [Local comparator log](verification/logs/fc-target.log) · [Local receipt](verification/logs/result.json) · [Fresh replay log](verification/logs/replay.log)
 
 ### Certification after 90 days
 
@@ -63,6 +73,7 @@ python3 verification/archive-run.py --repo OWNER/REPO --run RUN_ID \
 With elan and bubblewrap installed on Linux, run from the repository root. [Pinned Lean project](lean/)
 
 ```sh
+python3 verification/prepare_sources.py --check
 (cd lean && lake exe cache get)
 python3 verification/verify.py
 (cd lean && LEAN_NUM_THREADS=1 lake env leanchecker --fresh --verbose Comparator.Candidate)

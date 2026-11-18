@@ -1,5 +1,6 @@
 module
 
+public import Comparator.FCStatement
 public import Mathlib.Algebra.BigOperators.Group.Finset.Basic
 public import Mathlib.Data.Fintype.Pi
 public import Mathlib.Data.Rat.Floor
@@ -22,12 +23,5 @@ def PlanarWalkInput : Prop :=
 def RationalPointInput : Prop :=
   ∀ h : Fin 6 → ℕ, Function.Injective h →
     {t : ℚ | ∃ y : ℚ, y ^ 2 = ∏ j, (t + (h j : ℚ))}.Finite
-
-/-- The affirmative statement in Formal Conjectures, with its definition unfolded. -/
-def ArbitrarilyLongSquareQuasiProgressions : Prop :=
-  ∃ C : ℕ, 0 < C ∧ ∀ k : ℕ,
-    ∃ (x : ℕ → ℕ) (d : ℕ), 0 < d ∧
-      (∀ i < k, x i ∈ {n : ℕ | IsSquare n}) ∧
-      ∀ i, i + 1 < k → x i + d ≤ x (i + 1) ∧ x (i + 1) ≤ x i + d + C
 
 end Erdos782

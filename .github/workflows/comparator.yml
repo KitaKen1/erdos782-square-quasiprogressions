@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Check both targets against the pinned FC source
+        run: python3 verification/prepare_sources.py --check
       - name: Set up the comparator sandbox
         run: |
           sudo apt-get update

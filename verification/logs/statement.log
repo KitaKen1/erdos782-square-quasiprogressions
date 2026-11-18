@@ -1,0 +1,2 @@
+erdos_782.parts.i_neg : PlanarWalkInput →
+  RationalPointInput → ¬∃ C, 0 < C ∧ ∀ (k : ℕ), ContainsQuasiProgression {n | IsSquare n} C k

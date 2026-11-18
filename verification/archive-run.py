@@ -51,9 +51,13 @@ def main():
             name: archive.read(name)
             for name in ("result.json", "fc-target.log", "replay.log", "replay-status.txt")
         }
+        if "statement.log" in archive.namelist():
+            files["statement.log"] = archive.read("statement.log")
     result = json.loads(files["result.json"])
     if (result.get("accepted") is not True or result.get("lake_bubblewrap") is not True
-            or result.get("targets") != ["Erdos782.part_i_negative"]
+            or result.get("targets") not in (
+                ["Erdos782.erdos_782.parts.i_neg"], ["Erdos782.part_i_negative"],
+            )
             or files["replay-status.txt"] != b"PASS\n"
             or not all(verdict in files["fc-target.log"] for verdict in (
                 b"nanoda kernel accepts the solution",

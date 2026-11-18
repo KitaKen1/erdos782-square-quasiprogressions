@@ -2,6 +2,8 @@ name: Lean comparator
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/fc-782-unconditional]
 
 permissions:
   contents: read
@@ -13,9 +15,9 @@ defaults:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 360
     env:
-      LEAN_NUM_THREADS: "1"
+      LEAN_NUM_THREADS: "2"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -25,7 +27,7 @@ jobs:
       - name: Set up the comparator sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install -y apparmor bubblewrap
+          sudo apt-get install -y apparmor bubblewrap zstd
           sandbox=$(command -v bwrap)
           probe=(--ro-bind / / --dev /dev --proc /proc --unshare-all -- /usr/bin/true)
           if ! "$sandbox" "${probe[@]}"; then
@@ -47,18 +49,68 @@ jobs:
           curl --proto '=https' --tlsv1.2 -fsSL https://elan.lean-lang.org/elan-init.sh -o "$installer"
           sh "$installer" -y --default-toolchain none --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-      - name: Fetch pinned Lean dependencies
+      - name: Check memory and enable swap on the runner
+        run: |
+          df -h /
+          free -h
+          available=$(df -PB1 / | awk 'NR==2 {print $4}')
+          swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
+          if (( available >= 55 * 1024**3 && swap < 8 * 1024**2 )); then
+            sudo fallocate -l 12G /var/tmp/lean-ci.swap
+            sudo chmod 600 /var/tmp/lean-ci.swap
+            sudo mkswap /var/tmp/lean-ci.swap
+            sudo swapon /var/tmp/lean-ci.swap || printf "Runner swap could not be enabled.\n"
+          fi
+      - name: Fetch pinned Mathlib outputs
+        working-directory: lean
+        run: lake exe cache get Mathlib
+      - name: Restore a previous dependency build
+        id: deps
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            lean/.lake/packages/Stacks/.lake/build
+            lean/.lake/packages/Mordell/.lake/build
+          key: fc782-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean/lean-toolchain', 'lean/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fc782-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean/lean-toolchain', 'lean/lake-manifest.json') }}-
+      - name: Restore the pinned public cache
+        if: steps.deps.outputs.cache-matched-key == ''
+        run: bash verification/restore-axiom-cache.sh
+      - name: Build the candidate and its dependencies
+        id: compile
         working-directory: lean
         run: |
-          mapfile -t modules < <(awk '/^public import Mathlib\./ { print $3 }' Erdos782QuasiProgressions.lean)
-          lake exe cache get "${modules[@]}"
-      - name: Verify the conditional declaration with Lean and nanoda
-        run: python3 verification/verify.py
-      - name: Replay the candidate in a fresh Lean kernel
-        working-directory: lean
+          mkdir -p ../verification/results
+          set +e
+          timeout --kill-after=30s 265m lake build +Comparator.Candidate \
+            2>&1 | tee ../verification/results/source-build.log
+          result=${PIPESTATUS[0]}
+          set -e
+          echo "exit=$result" >> "$GITHUB_OUTPUT"
+          exit "$result"
+      - name: Remove regenerable compiler inputs from the dependency cache
+        if: ${{ !cancelled() && steps.compile.outcome != 'skipped' }}
         run: |
-          lake env leanchecker --fresh --verbose Comparator.Candidate 2>&1 | tee ../verification/results/replay.log
-          printf 'PASS\n' > ../verification/results/replay-status.txt
+          find lean/.lake/packages/{Stacks,Mordell}/.lake/build/ir -name '*.setup.json' -type f -delete
+      - name: Save completed dependency modules
+        if: ${{ !cancelled() && steps.compile.outcome != 'skipped' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            lean/.lake/packages/Stacks/.lake/build
+            lean/.lake/packages/Mordell/.lake/build
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+      - name: Audit the candidate and export its proof
+        run: |
+          lake_version=$(cat lean/lean-toolchain)
+          printf '%s\n' "$lake_version"
+          (cd lean && lake env lean ../verification/Check.lean) | tee verification/results/source-statement.log
+          bash verification/export-solution.sh "$RUNNER_TEMP/erdos782-proof.ndjson.gz"
+          sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson.gz" | cut -d ' ' -f 1 > verification/results/solution.sha256
+          gzip -dc "$RUNNER_TEMP/erdos782-proof.ndjson.gz" > "$RUNNER_TEMP/erdos782-proof.ndjson"
+      - name: Verify the unconditional declaration with Lean and nanoda
+        run: python3 verification/verify.py --solution-export "$RUNNER_TEMP/erdos782-proof.ndjson"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

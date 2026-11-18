@@ -5,18 +5,17 @@
 > [!NOTE]
 > **Problem (i).** Is there a fixed integer $C>0$ such that for every length $k$ there are squares $x_0<\cdots<x_{k-1}$ whose successive differences all lie in $[d,d+C]$ for some integer $d\ge1$? The value of $d$ may vary with the sequence.
 
-This repository answers **no** to part (i), with the reduction to Gerver–Ramsey and Faltings checked in Lean. [Lean theorem](lean/Comparator/Candidate.lean#L10)
+This branch tests a Lean proof that the answer to part (i) is **no**. [Lean theorem](lean/Comparator/Candidate.lean#L11)
 
 ### Exact Formal Conjectures target
 
-The proposition under `¬` is the type of FC's `erdos_782.parts.i`. The generator copies that type and the original `ContainsQuasiProgression` definition from the pinned FC source. The two arguments state the forms of Gerver–Ramsey and Faltings used in the proof sketch. [Pinned FC source](verification/reference/782.lean#L77-L89) · [Generated Lean module](lean/Comparator/FCStatement.lean)
+The proposition under `¬` is the type of FC's `erdos_782.parts.i`. The generator copies that type and the original `ContainsQuasiProgression` definition from the pinned FC source. The proof formalizes the needed case of Gerver–Ramsey and applies AxiomMath’s formalization of Faltings’s theorem. [Pinned FC source](verification/reference/782.lean#L77-L89) · [Generated Lean module](lean/Comparator/FCStatement.lean)
 
 ```lean
-theorem erdos_782.parts.i_neg
-    (walk : PlanarWalkInput) (finitePoints : RationalPointInput) :
+theorem erdos_782.parts.i_neg :
     ¬ (∃ C : ℕ, 0 < C ∧ ∀ k : ℕ,
       ContainsQuasiProgression {n : ℕ | IsSquare n} C k) :=
-  Erdos782Reduction.not_exists_width walk finitePoints
+  Erdos782Reduction.not_exists_width Erdos782Walk.planarWalk Erdos782Arithmetic.sixRootFiniteness
 ```
 
 ### Mathematical Explanation (AI generated)
@@ -29,7 +28,7 @@ theorem erdos_782.parts.i_neg
 y^2=\prod_{j=1}^6(t+h_j).
 ```
 
-The smooth projective model is a double cover of the projective line branched at the six distinct points $-h_j$, with no ramification at infinity because the degree is even. Riemann–Hurwitz gives genus two. By Faltings's theorem, each such curve has only finitely many rational points. Since the six offsets come from $\{0,\ldots,N\}$, only finitely many curves occur. Choose a nonnegative integer $T=T(N)$ bounding the affine rational $t$-coordinates of all of them from above. [Faltings (1983)](https://doi.org/10.1007/BF01388432)
+The smooth projective model is a double cover of the projective line branched at the six distinct points $-h_j$, with no ramification at infinity because the degree is even. Riemann–Hurwitz gives genus two. By Faltings's theorem, each such curve has only finitely many rational points. Since the six offsets come from $\{0,\ldots,N\}$, only finitely many curves occur. Choose a nonnegative integer $T=T(N)$ bounding the affine rational $t$-coordinates of all of them from above. The Lean proof uses Tau Ceti’s hyperelliptic genus formula and identifies its genus with the adelic genus in AxiomMath’s formulation. For a rational abscissa $t$ with a nonzero ordinate, the corresponding degree-one place restricts to the place of $X-t$, so distinct such abscissae give distinct places. An abscissa with ordinate zero is a root of the sextic. [Faltings (1983)](https://doi.org/10.1007/BF01388432) · [Lean application](lean/SexticFiniteness.lean) · [AxiomMath’s Faltings theorem](https://github.com/AxiomMath/Mordell/blob/82a30cb7857f6e3cfdb1be91f5533c0ccb57d493/Mordell/MordellConjecture/FunctionField.lean#L46)
 
 **3. Bound the length.** The positive gaps give $x_i\ge id$, so $X\ge md$. The rational-point bound gives $X\le qT\le(d+C)T\le d(C+1)T$, since $d\ge1$. Dividing by $d$ yields $m\le(C+1)T$. Therefore
 
@@ -51,13 +50,11 @@ The bound also holds for $k\le N$. It depends only on $C$, which proves the conj
 
 ## Appendix: Verification by Lean Comparator on GitHub CI runner
 
-Run the [Lean comparator workflow](.github/workflows/comparator.yml) manually from the Actions tab. It checks the checksum of the pinned FC file and compares the proposition under `¬` in both modules with the original. Lake uses bubblewrap on Ubuntu 24.04 to build and export the challenge and candidate separately. Comparator checks `Erdos782.erdos_782.parts.i_neg`, permits only `propext`, `Classical.choice`, and `Quot.sound`, and requires both nanoda and Lean's kernel to accept the candidate. A fresh Lean kernel then replays the module. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
+Run the [Lean comparator workflow](.github/workflows/comparator.yml) manually from the Actions tab. It checks the pinned FC snapshot and builds the reference statement in a project with the pinned Mathlib dependency. The runner builds the candidate using the pinned public Stacks and Mordell cache, exports the proof with Lean, and compares it against that reference. Comparator permits only `propext`, `Classical.choice`, and `Quot.sound`. It checks the exported proof with nanoda and Lean’s kernel. A fresh Lean kernel also replays the export. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
 
 ### Certification within 90 days
 
 Each workflow attempt uploads an artifact named `comparator-<run-id>-<attempt>` with 90-day retention. A successful attempt contains the checked Lean signature in `statement.log`, both kernel verdicts in `fc-target.log`, the result in `result.json`, and the fresh replay log and status.
-
-On 18 November 2026, the trusted local macOS run passed the comparator check with nanoda and Lean, followed by a fresh kernel replay. [Checked Lean signature](verification/logs/statement.log) · [Local comparator log](verification/logs/fc-target.log) · [Local receipt](verification/logs/result.json) · [Fresh replay log](verification/logs/replay.log)
 
 ### Certification after 90 days
 
@@ -70,16 +67,16 @@ python3 verification/archive-run.py --repo OWNER/REPO --run RUN_ID \
 
 ### Reproduce the verification
 
-With elan and bubblewrap installed on Linux, run from the repository root. [Pinned Lean project](lean/)
+With elan and bubblewrap installed on Linux, run from the repository root. The first source build compiles the pinned Stacks and Mordell dependencies. [Pinned Lean project](lean/)
 
 ```sh
 python3 verification/prepare_sources.py --check
 (cd lean && lake exe cache get)
 python3 verification/verify.py
-(cd lean && LEAN_NUM_THREADS=1 lake env leanchecker --fresh --verbose Comparator.Candidate)
+bash verification/export-solution.sh /tmp/erdos782-proof.ndjson.gz
 ```
 
-For a trusted macOS checkout, pass `--trusted-local` to `verification/verify.py` to run Comparator without Linux's bubblewrap sandbox.
+For a trusted macOS checkout, pass `--trusted-local` to `verification/verify.py`. To check a previously generated proof export, decompress the archive and pass its NDJSON path with `--solution-export`.
 
 ## AI usage disclosure
 

@@ -1,15 +1,30 @@
-name = "erdos782"
+name = "erdos782_unconditional"
 version = "0.1.0"
-defaultTargets = ["Erdos782QuasiProgressions"]
+defaultTargets = ["Comparator"]
+
+[leanOptions]
+pp.unicode.fun = true
+autoImplicit = false
+relaxedAutoImplicit = false
+maxSynthPendingDepth = 3
+weak.linter.mathlibStandardSet = true
 
 [[require]]
-name = "mathlib"
-scope = "leanprover-community"
-git = "https://github.com/leanprover-community/mathlib4.git"
-rev = "f6090c7095e1e56b3464c1daba5f24631f1290d2"
+name = "Mordell"
+git = "https://github.com/AxiomMath/Mordell"
+rev = "82a30cb7857f6e3cfdb1be91f5533c0ccb57d493"
+
+[[lean_lib]]
+name = "TauCeti"
+leanOptions = { autoImplicit = true, relaxedAutoImplicit = true }
+
+[[lean_lib]]
+name = "Erdos782Arithmetic"
+roots = ["PlaceBridge", "AdelicBridge", "SixRootPolynomial", "SexticFinitenessAdapter", "SexticFiniteness", "ExactCandidateIntegrationTest"]
 
 [[lean_lib]]
 name = "Erdos782QuasiProgressions"
+globs = ["Erdos782QuasiProgressions", "Erdos782QuasiProgressions.+"]
 
 [[lean_lib]]
 name = "Comparator"

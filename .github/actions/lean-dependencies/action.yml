@@ -1,5 +1,9 @@
 name: Prepare pinned Lean dependencies
 description: Install Lean and restore the pinned Mathlib, Stacks and Mordell outputs
+inputs:
+  seed-run-id:
+    description: Previous parallel run supplying dependency outputs
+    default: ''
 outputs:
   public-cache-hit:
     description: Whether the pinned public cache was found in GitHub Actions storage
@@ -49,3 +53,16 @@ runs:
       name: Restore the pinned public cache if needed
       if: steps.public-cache.outputs.cache-hit != 'true'
       run: bash verification/restore-axiom-cache.sh
+    - uses: actions/download-artifact@v8
+      if: inputs.seed-run-id != ''
+      with:
+        github-token: ${{ github.token }}
+        run-id: ${{ inputs.seed-run-id }}
+        pattern: fc782-wave-*
+        path: ${{ runner.temp }}/lean-seed
+    - shell: bash
+      name: Restore compiler outputs from the previous run
+      if: inputs.seed-run-id != ''
+      run: |
+        test -d "$RUNNER_TEMP/lean-seed"
+        bash "$GITHUB_WORKSPACE/verification/restore-shards.sh" 7 "$RUNNER_TEMP/lean-seed"

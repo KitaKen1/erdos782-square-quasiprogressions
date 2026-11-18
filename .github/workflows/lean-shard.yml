@@ -8,6 +8,9 @@ on:
       shard:
         type: number
         required: true
+      seed-run-id:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -26,6 +29,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/lean-dependencies
+        with:
+          seed-run-id: ${{ inputs.seed-run-id }}
       - uses: actions/download-artifact@v8
         with:
           name: fc782-build-plan

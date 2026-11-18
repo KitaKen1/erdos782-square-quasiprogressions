@@ -5,7 +5,7 @@
 > [!NOTE]
 > **Problem (i).** Is there a fixed integer $C>0$ such that for every length $k$ there are squares $x_0<\cdots<x_{k-1}$ whose successive differences all lie in $[d,d+C]$ for some integer $d\ge1$? The value of $d$ may vary with the sequence.
 
-This branch tests a Lean proof that the answer to part (i) is **no**. [Lean theorem](lean/Comparator/Candidate.lean#L11)
+This repository proves in Lean that the answer to part (i) is **no**. [Lean theorem](lean/Comparator/Candidate.lean#L11)
 
 ### Exact Formal Conjectures target
 
@@ -51,6 +51,8 @@ The bound also holds for $k\le N$. It depends only on $C$, which proves the conj
 ## Appendix: Verification by Lean Comparator on GitHub CI runner
 
 The [parallel Lean comparator workflow](.github/workflows/comparator-parallel.yml) runs on pushes to this branch. The [single-runner workflow](.github/workflows/comparator.yml) is available from the Actions tab. It checks the pinned FC snapshot and builds the reference statement in a project with the pinned Mathlib dependency. The workflows use the pinned public Stacks and Mordell cache. The parallel workflow builds the remaining dependencies in topological order across its jobs. The final job builds the candidate, exports the proof with Lean, and compares it against the reference. Comparator permits only `propext`, `Classical.choice`, and `Quot.sound`. It checks the exported proof with nanoda and Lean’s kernel. A fresh Lean kernel also replays the export. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
+
+The proof and workflow under verification are at commit `2b11bcc`. [GitHub Actions run](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44353268582)
 
 ### Certification within 90 days
 

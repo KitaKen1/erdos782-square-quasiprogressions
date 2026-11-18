@@ -1,0 +1,7 @@
+{
+  "challenge_module": "Comparator.Challenge",
+  "solution_module": "Comparator.Candidate",
+  "theorem_names": ["Erdos782.part_i_negative"],
+  "permitted_axioms": ["propext", "Classical.choice", "Quot.sound"],
+  "external_kernels": {"nanoda": ["nanoda_bin"]}
+}

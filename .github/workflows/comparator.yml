@@ -1,0 +1,66 @@
+name: Lean comparator
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      LEAN_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up the comparator sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apparmor bubblewrap
+          sandbox=$(command -v bwrap)
+          probe=(--ro-bind / / --dev /dev --proc /proc --unshare-all -- /usr/bin/true)
+          if ! "$sandbox" "${probe[@]}"; then
+            sudo install -m 0755 "$sandbox" /usr/local/bin/erdos782-bwrap
+            sandbox=/usr/local/bin/erdos782-bwrap
+            sudo apparmor_parser -r <<'APPARMOR'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile erdos782-bwrap /usr/local/bin/erdos782-bwrap flags=(unconfined) {
+            userns,
+          }
+          APPARMOR
+            "$sandbox" "${probe[@]}"
+          fi
+          echo "COMPARATOR_BWRAP=$sandbox" >> "$GITHUB_ENV"
+      - name: Install elan
+        run: |
+          installer="$RUNNER_TEMP/erdos782-elan-init.sh"
+          curl --proto '=https' --tlsv1.2 -fsSL https://elan.lean-lang.org/elan-init.sh -o "$installer"
+          sh "$installer" -y --default-toolchain none --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Fetch pinned Lean dependencies
+        working-directory: lean
+        run: |
+          mapfile -t modules < <(awk '/^public import Mathlib\./ { print $3 }' Erdos782QuasiProgressions.lean)
+          lake exe cache get "${modules[@]}"
+      - name: Verify the conditional declaration with Lean and nanoda
+        run: python3 verification/verify.py
+      - name: Replay the candidate in a fresh Lean kernel
+        working-directory: lean
+        run: |
+          lake env leanchecker --fresh --verbose Comparator.Candidate 2>&1 | tee ../verification/results/replay.log
+          printf 'PASS\n' > ../verification/results/replay-status.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: comparator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/results/
+          retention-days: 90
+          if-no-files-found: ignore

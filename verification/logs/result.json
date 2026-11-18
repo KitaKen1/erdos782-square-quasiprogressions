@@ -1,0 +1,12 @@
+{
+  "accepted": true,
+  "targets": [
+    "Erdos782.part_i_negative"
+  ],
+  "kernels": [
+    "Lean",
+    "nanoda"
+  ],
+  "lake_bubblewrap": false,
+  "scope": "conditional reduction for Erdős 782(i)"
+}

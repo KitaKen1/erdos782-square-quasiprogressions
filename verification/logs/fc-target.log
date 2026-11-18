@@ -1,0 +1,15 @@
+WARNING: Sandbox disabled, this run is not trustworthy.
+Resolving dependencies
+Building Comparator.Challenge
+Build completed successfully (990 jobs).
+Exporting #[Quot, Quot.mk, Quot.lift, Quot.ind, Erdos782.part_i_negative, propext, Classical.choice, Quot.sound, Nat.add, Nat.sub, Nat.mul, Nat.pow, Nat.gcd, Nat.div, Nat.mod, Nat.beq, Nat.ble, Nat.land, Nat.lor, Nat.xor, Nat.shiftLeft, Nat.shiftRight, String.ofList, Char.ofNat, List, eagerReduce, Nat, String, String.mk, Char, optParam, autoParam, semiOutParam, outParam] from Comparator.Challenge
+Building Comparator.Candidate
+ℹ [1009/1009] Replayed Comparator.Candidate
+info: Comparator/Candidate.lean:16:0: 'Erdos782.part_i_negative' depends on axioms: [propext, Classical.choice, Quot.sound]
+Build completed successfully (1009 jobs).
+Exporting #[Quot, Quot.mk, Quot.lift, Quot.ind, Erdos782.part_i_negative, propext, Classical.choice, Quot.sound, Nat.add, Nat.sub, Nat.mul, Nat.pow, Nat.gcd, Nat.div, Nat.mod, Nat.beq, Nat.ble, Nat.land, Nat.lor, Nat.xor, Nat.shiftLeft, Nat.shiftRight, String.ofList, Char.ofNat, List, eagerReduce, Nat, String, String.mk, Char, optParam, autoParam, semiOutParam, outParam] from Comparator.Candidate
+Running nanoda kernel on solution
+nanoda kernel accepts the solution
+Running Lean default kernel on solution
+Lean default kernel accepts the solution
+Your solution is okay!

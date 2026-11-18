@@ -5,6 +5,10 @@ on:
       seed-run-ids:
         description: Space-delimited IDs for completed runs whose compiled dependencies should be reused
         type: string
+      verify-only:
+        description: Verify the full proof using completed dependency artifacts
+        type: boolean
+        default: false
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -22,6 +26,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       seed-run-ids: ${{ steps.seed.outputs.run-ids }}
+      verify-only: ${{ steps.seed.outputs.verify-only }}
       wave0: ${{ steps.plan.outputs.wave0 }}
       wave1: ${{ steps.plan.outputs.wave1 }}
       wave2: ${{ steps.plan.outputs.wave2 }}
@@ -39,12 +44,19 @@ jobs:
         id: seed
         env:
           DISPATCH_SEED: ${{ inputs.seed-run-ids }}
+          DISPATCH_VERIFY_ONLY: ${{ inputs.verify-only }}
           GH_TOKEN: ${{ github.token }}
         run: |
           seed_list="$DISPATCH_SEED"
+          verify_only="$DISPATCH_VERIFY_ONLY"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            seed_list=$(git log -1 --format=%B | git interpret-trailers --parse |
-              sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
+            trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
+            seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
+            verify_only=$(printf '%s\n' "$trailers" | sed -n 's/^Verify-Only: //p')
+          fi
+          if [[ "$verify_only" == 'true' ]]; then
+            [[ -n "$seed_list" ]]
+            echo 'verify-only=true' >> "$GITHUB_OUTPUT"
           fi
           if [[ -z "$seed_list" ]]; then
             exit 0
@@ -72,10 +84,11 @@ jobs:
           echo "run-ids=${seed_runs[*]}" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/lean-dependencies
         id: deps
+        if: steps.seed.outputs.verify-only != 'true'
         with:
           seed-run-ids: ${{ steps.seed.outputs.run-ids }}
       - name: Save the public cache for the compiler jobs
-        if: steps.seed.outputs.run-ids == '' && steps.deps.outputs.public-cache-hit != 'true'
+        if: steps.seed.outputs.verify-only != 'true' && steps.seed.outputs.run-ids == '' && steps.deps.outputs.public-cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -84,8 +97,10 @@ jobs:
           key: ${{ steps.deps.outputs.public-cache-key }}
       - name: Plan the dependency builds
         id: plan
+        if: steps.seed.outputs.verify-only != 'true'
         run: python3 verification/dependency_shards.py plan "$RUNNER_TEMP/plan.json" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
+        if: steps.seed.outputs.verify-only != 'true'
         with:
           name: fc782-build-plan
           path: ${{ runner.temp }}/plan.json
@@ -94,6 +109,7 @@ jobs:
           retention-days: 2
 
   wave0:
+    if: needs.prepare.outputs.verify-only != 'true'
     needs: prepare
     strategy:
       fail-fast: false
@@ -106,6 +122,7 @@ jobs:
       seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave1:
+    if: needs.prepare.outputs.verify-only != 'true'
     needs: [prepare, wave0]
     strategy:
       fail-fast: false
@@ -118,6 +135,7 @@ jobs:
       seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave2:
+    if: needs.prepare.outputs.verify-only != 'true'
     needs: [prepare, wave1]
     strategy:
       fail-fast: false
@@ -130,6 +148,7 @@ jobs:
       seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave3:
+    if: needs.prepare.outputs.verify-only != 'true'
     needs: [prepare, wave2]
     strategy:
       fail-fast: false
@@ -142,6 +161,7 @@ jobs:
       seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave4:
+    if: needs.prepare.outputs.verify-only != 'true'
     needs: [prepare, wave3]
     strategy:
       fail-fast: false
@@ -154,6 +174,7 @@ jobs:
       seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave5:
+    if: needs.prepare.outputs.verify-only != 'true'
     needs: [prepare, wave4]
     strategy:
       fail-fast: false
@@ -166,6 +187,7 @@ jobs:
       seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
 
   wave6:
+    if: needs.prepare.outputs.verify-only != 'true'
     needs: [prepare, wave5]
     strategy:
       fail-fast: false
@@ -179,8 +201,9 @@ jobs:
 
   verify:
     needs: [prepare, wave6]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.wave6.result == 'success' || needs.prepare.outputs.verify-only == 'true') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 360
     env:
       LEAN_NUM_THREADS: "1"
     steps:
@@ -192,11 +215,14 @@ jobs:
       - uses: ./.github/actions/lean-dependencies
         with:
           seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+          swap-gib: '32'
       - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.verify-only != 'true'
         with:
           pattern: fc782-wave-*
           path: ${{ runner.temp }}/lean-deltas
       - name: Restore compiled dependencies
+        if: needs.prepare.outputs.verify-only != 'true'
         run: bash verification/restore-shards.sh 7 "$RUNNER_TEMP/lean-deltas"
       - name: Set up the comparator sandbox
         run: |
@@ -222,13 +248,22 @@ jobs:
           mkdir -p verification/results
           (cd lean && lake build +Comparator.Candidate) 2>&1 | tee verification/results/source-build.log
           (cd lean && lake env lean ../verification/Check.lean) | tee verification/results/source-statement.log
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            verification/results/source-build.log
+            verification/results/source-statement.log
+          retention-days: 90
+          if-no-files-found: error
       - name: Export the proof
         run: |
-          bash verification/export-solution.sh "$RUNNER_TEMP/erdos782-proof.ndjson.gz"
-          sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson.gz" | cut -d ' ' -f 1 > verification/results/solution.sha256
-          gzip -dc "$RUNNER_TEMP/erdos782-proof.ndjson.gz" > "$RUNNER_TEMP/erdos782-proof.ndjson"
+          free -h
+          df -h /
+          nice -n 10 ionice -c 2 -n 6 bash verification/export-solution.sh --raw "$RUNNER_TEMP/erdos782-proof.ndjson"
+          sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson" | cut -d ' ' -f 1 > verification/results/solution.sha256
       - name: Verify the unconditional declaration with Lean and nanoda
-        run: python3 verification/verify.py --solution-export "$RUNNER_TEMP/erdos782-proof.ndjson"
+        run: nice -n 10 ionice -c 2 -n 6 python3 verification/verify.py --solution-export "$RUNNER_TEMP/erdos782-proof.ndjson"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

@@ -4,6 +4,9 @@ inputs:
   seed-run-ids:
     description: Space-delimited earlier parallel runs supplying dependency outputs
     default: ''
+  swap-gib:
+    description: Size of additional swap in GiB on the Linux runner
+    default: '20'
 outputs:
   public-cache-hit:
     description: Whether the pinned public cache was found in GitHub Actions storage
@@ -23,7 +26,10 @@ runs:
         echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
     - shell: bash
       name: Check runner resources
+      env:
+        EXTRA_SWAP_GIB: ${{ inputs.swap-gib }}
       run: |
+        [[ "$EXTRA_SWAP_GIB" == '20' || "$EXTRA_SWAP_GIB" == '32' ]]
         if ! command -v zstd >/dev/null; then
           sudo apt-get update
           sudo apt-get install -y zstd
@@ -32,8 +38,8 @@ runs:
         free -h
         available=$(df -PB1 / | awk 'NR==2 {print $4}')
         swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
-        if (( available >= 65 * 1024**3 && swap < 16 * 1024**2 )); then
-          sudo fallocate -l 20G /var/tmp/lean-ci.swap
+        if (( available >= (EXTRA_SWAP_GIB + 45) * 1024**3 && swap < 16 * 1024**2 )); then
+          sudo fallocate -l "${EXTRA_SWAP_GIB}G" /var/tmp/lean-ci.swap
           sudo chmod 600 /var/tmp/lean-ci.swap
           sudo mkswap /var/tmp/lean-ci.swap
           sudo swapon /var/tmp/lean-ci.swap || printf 'Runner swap could not be enabled.\n'

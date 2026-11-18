@@ -18,14 +18,20 @@ VERDICTS = (
 
 
 def run(log_name, command, cwd=LEAN):
-    result = subprocess.run(
-        command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        encoding="utf-8", check=False,
-    )
-    (RESULTS / log_name).write_text(result.stdout, encoding="utf-8")
-    print(result.stdout, end="", flush=True)
-    result.check_returncode()
-    return result.stdout
+    path = RESULTS / log_name
+    with path.open("w", encoding="utf-8") as log:
+        with subprocess.Popen(
+            command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            encoding="utf-8",
+        ) as process:
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end="", flush=True)
+            result = process.wait()
+    if result:
+        raise subprocess.CalledProcessError(result, command)
+    return path.read_text(encoding="utf-8")
 
 
 def prepare_challenge(directory):

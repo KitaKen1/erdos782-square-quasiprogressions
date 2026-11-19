@@ -33,15 +33,10 @@ private def getChunk (directory : System.FilePath) (index : Nat) : IO ModuleData
     throw (IO.userError s!"Invalid module data in chunk {index}")
   return data
 
-private def checkChunk (directory : System.FilePath) (index : Nat) : IO Unit := do
-  -- Only the preceding, same-export chunks can be imported. Each is checked in a
-  -- separate invocation, so success of this worker is conditional upon their checks.
-  searchPathRef.set [directory]
-  let data ← getChunk directory index
-  let imported ←
-    if index == 0 then mkEmptyEnvironment else importModules data.imports {}
+private def checkDeclarations (imported : Environment) (declarations : Array ConstantInfo) :
+    IO Unit := do
   let mut constants : Std.HashMap Name ConstantInfo := {}
-  for ci in data.constants do
+  for ci in declarations do
     if ci.isUnsafe || ci.isPartial then
       throw (IO.userError s!"Unsafe or partial declaration '{ci.name}'")
     if (imported.find? ci.name).isSome || constants.contains ci.name then
@@ -52,10 +47,65 @@ private def checkChunk (directory : System.FilePath) (index : Nat) : IO Unit := 
     unless quotientGenerated.contains ci.name do
       constants := constants.insert ci.name ci
   let checked ← imported.toKernelEnv.replay constants
-  for ci in data.constants do
+  for ci in declarations do
     unless checked.find? ci.name == some ci do
       throw (IO.userError s!"Kernel replay produced different information for '{ci.name}'")
+
+private def checkChunk (directory : System.FilePath) (index : Nat) : IO Unit := do
+  -- Only the preceding, same-export chunks can be imported. Each is checked in a
+  -- separate invocation, so success of this worker is conditional upon their checks.
+  searchPathRef.set [directory]
+  let data ← getChunk directory index
+  let imported ←
+    if index == 0 then mkEmptyEnvironment else importModules data.imports {}
+  checkDeclarations imported data.constants
   IO.println s!"Lean kernel accepted chunk {index} ({data.constants.size} declarations)"
+
+private def isGroupedDeclaration : ConstantInfo → Bool
+  | .inductInfo _ | .ctorInfo _ | .recInfo _ | .quotInfo _ => true
+  | _ => false
+
+-- Move cuts that fall inside an inductive or quotient package to the end of that package.
+private def sliceBoundaries (declarations : Array ConstantInfo) (parts : Nat) :
+    IO (Array Nat) := do
+  let size := declarations.size
+  unless 0 < parts && parts ≤ size do
+    throw (IO.userError "Invalid slice count")
+  let mut bounds : Array Nat := #[0]
+  for i in [1:parts] do
+    let mut cut := i * size / parts
+    while cut < size && isGroupedDeclaration declarations[cut - 1]! &&
+        isGroupedDeclaration declarations[cut]! do
+      cut := cut + 1
+    unless bounds.back! < cut && cut < size do
+      throw (IO.userError "Could not split into nonempty declaration slices")
+    bounds := bounds.push cut
+  return bounds.push size
+
+private def checkSlice (directory scratch : System.FilePath) (index part parts : Nat) :
+    IO Unit := do
+  let data ← getChunk directory index
+  let bounds ← sliceBoundaries data.constants parts
+  unless part < parts do throw (IO.userError "Invalid slice index")
+  let lo := bounds[part]!
+  let hi := bounds[part + 1]!
+  let mut imports := data.imports
+  searchPathRef.set [scratch, directory]
+  if lo > 0 then
+    -- This prefix consists only of the declarations preceding this slice in the
+    -- original hashed chunk. Each prefix declaration has its own kernel check.
+    let mod := `ExportReplaySlicePrefix
+    let prefixDeclarations := data.constants.extract 0 lo
+    let prefixData : ModuleData := { data with
+      constants := prefixDeclarations
+      constNames := prefixDeclarations.map ConstantInfo.name
+    }
+    saveModuleData (scratch / "ExportReplaySlicePrefix.olean") mod prefixData
+    imports := #[{ module := mod }]
+  let imported ←
+    if imports.isEmpty then mkEmptyEnvironment else importModules imports {}
+  checkDeclarations imported (data.constants.extract lo hi)
+  IO.println s!"Lean kernel accepted chunk {index}, slice {part} ({lo} to {hi} of {data.constants.size} declarations)"
 
 private def compareProof (directory : System.FilePath) (count : Nat)
     (challengePath : System.FilePath) : IO Unit := do
@@ -90,7 +140,11 @@ def main (args : List String) : IO Unit := do
   | ["check", directory, index] =>
     let some index := index.toNat? | throw (IO.userError "Expected a chunk index")
     checkChunk ⟨directory⟩ index
+  | ["check-slice", directory, scratch, index, part, parts] =>
+    let some index := index.toNat? | throw (IO.userError "Expected a chunk index")
+    let some part := part.toNat? | throw (IO.userError "Expected a slice index")
+    checkSlice ⟨directory⟩ ⟨scratch⟩ index part (← positive parts)
   | ["compare", directory, count, challenge] =>
     compareProof ⟨directory⟩ (← positive count) ⟨challenge⟩
   | _ =>
-    throw (IO.userError "Usage: export-replay split PROOF NEW_DIRECTORY BATCH_LINES | check DIRECTORY INDEX | compare DIRECTORY COUNT CHALLENGE")
+    throw (IO.userError "Usage: export-replay split PROOF NEW_DIRECTORY BATCH_LINES | check DIRECTORY INDEX | check-slice DIRECTORY SCRATCH INDEX PART PARTS | compare DIRECTORY COUNT CHALLENGE")

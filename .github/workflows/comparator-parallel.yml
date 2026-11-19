@@ -23,6 +23,9 @@ on:
       previous-replay-run:
         description: Reuse successful replay workers from a run of the same prepared export
         type: string
+      previous-chunk-run:
+        description: Reuse successful individual chunks and subdivide the remaining chunks
+        type: string
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -47,8 +50,11 @@ jobs:
       prepared-groups: ${{ steps.seed.outputs.prepared-groups }}
       prepared-manifest-sha256: ${{ steps.seed.outputs.prepared-manifest-sha256 }}
       previous-replay-run: ${{ steps.seed.outputs.previous-replay-run }}
+      previous-chunk-run: ${{ steps.seed.outputs.previous-chunk-run }}
       previous-workers: ${{ steps.seed.outputs.previous-workers }}
-      remaining-chunks: ${{ steps.seed.outputs.remaining-chunks }}
+      previous-chunks: ${{ steps.seed.outputs.previous-chunks }}
+      replay-items: ${{ steps.seed.outputs.replay-items }}
+      replay-plan: ${{ steps.seed.outputs.replay-plan }}
       wave0: ${{ steps.plan.outputs.wave0 }}
       wave1: ${{ steps.plan.outputs.wave1 }}
       wave2: ${{ steps.plan.outputs.wave2 }}
@@ -71,6 +77,7 @@ jobs:
           DISPATCH_WITH_NANODA: ${{ inputs.with-nanoda }}
           DISPATCH_PREPARED_RUN: ${{ inputs.prepared-export-run }}
           DISPATCH_REPLAY_RUN: ${{ inputs.previous-replay-run }}
+          DISPATCH_CHUNK_RUN: ${{ inputs.previous-chunk-run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           seed_list="$DISPATCH_SEED"
@@ -78,6 +85,7 @@ jobs:
           full_export="$DISPATCH_FULL_EXPORT"
           prepared_run="$DISPATCH_PREPARED_RUN"
           replay_run="$DISPATCH_REPLAY_RUN"
+          chunk_run="$DISPATCH_CHUNK_RUN"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
             seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
@@ -85,6 +93,10 @@ jobs:
             full_export=$(printf '%s\n' "$trailers" | sed -n 's/^Full-Export: //p')
             prepared_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Export-Run: //p')
             replay_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Replay-Run: //p')
+            chunk_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Chunk-Run: //p')
+          fi
+          if [[ -n "$chunk_run" ]]; then
+            [[ -n "$replay_run" && "$chunk_run" =~ ^[1-9][0-9]*$ ]]
           fi
           if [[ -n "$replay_run" ]]; then
             [[ -n "$prepared_run" && "$replay_run" =~ ^[1-9][0-9]*$ ]]
@@ -103,7 +115,8 @@ jobs:
               .steps[] | select(.name == "Partition the proof export and compare its FC statement") |
               .conclusion' | grep -Fxq 'success'
             git fetch --depth=1 origin "$prepared_commit"
-            git diff --exit-code "$prepared_commit" HEAD -- lean verification
+            invariant_sources=(lean verification ':(exclude)verification/export-replay/Main.lean')
+            git diff --exit-code "$prepared_commit" HEAD -- "${invariant_sources[@]}"
             directory="$RUNNER_TEMP/prepared-export"
             gh run download "$prepared_run" --repo "$GITHUB_REPOSITORY" --name export-replay-manifest --dir "$directory"
             manifest="$directory/manifest.json"
@@ -115,18 +128,27 @@ jobs:
               printf 'prepared-manifest-sha256=%s\n' "$(sha256sum "$manifest" | cut -d ' ' -f 1)"
             } >> "$GITHUB_OUTPUT"
             if [[ -n "$replay_run" ]]; then
-              replay_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$replay_run" --jq '
-                select(.head_branch == "ci/fc-782-unconditional"
-                       and .path == ".github/workflows/comparator-parallel.yml"
-                       and (.event == "push" or .event == "workflow_dispatch"))
-                | .head_sha')
-              [[ "$replay_commit" =~ ^[0-9a-f]{40}$ ]]
-              git fetch --depth=1 origin "$replay_commit"
-              git diff --exit-code "$replay_commit" HEAD -- lean verification
-              jobs="$RUNNER_TEMP/previous-replay-jobs.json"
-              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$replay_run/jobs?per_page=100" > "$jobs"
+              replay_runs=("$replay_run")
+              if [[ -n "$chunk_run" ]]; then
+                replay_runs+=("$chunk_run")
+                echo "previous-chunk-run=$chunk_run" >> "$GITHUB_OUTPUT"
+              fi
+              job_files=()
+              for previous_run in "${replay_runs[@]}"; do
+                previous_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$previous_run" --jq '
+                  select(.head_branch == "ci/fc-782-unconditional"
+                         and .path == ".github/workflows/comparator-parallel.yml"
+                         and (.event == "push" or .event == "workflow_dispatch"))
+                  | .head_sha')
+                [[ "$previous_commit" =~ ^[0-9a-f]{40}$ ]]
+                git fetch --depth=1 origin "$previous_commit"
+                git diff --exit-code "$previous_commit" HEAD -- "${invariant_sources[@]}"
+                jobs="$RUNNER_TEMP/previous-replay-$previous_run.json"
+                gh api "repos/$GITHUB_REPOSITORY/actions/runs/$previous_run/jobs?per_page=100" > "$jobs"
+                job_files+=("$jobs")
+              done
               echo "previous-replay-run=$replay_run" >> "$GITHUB_OUTPUT"
-              python3 .github/scripts/recover-export-replay.py plan "$manifest" "$jobs" >> "$GITHUB_OUTPUT"
+              python3 .github/scripts/recover-export-replay.py plan "$manifest" "${job_files[@]}" >> "$GITHUB_OUTPUT"
             fi
             exit 0
           fi
@@ -404,13 +426,13 @@ jobs:
 
   replay-chunks:
     needs: [prepare, verify]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && needs.prepare.outputs.remaining-chunks != '[]' && (needs.verify.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && needs.prepare.outputs.replay-items != '[]' && (needs.verify.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(needs.prepare.outputs.remaining-chunks || needs.prepare.outputs.prepared-groups || needs.verify.outputs.export-groups) }}
+        group: ${{ fromJSON(needs.prepare.outputs.replay-items || needs.prepare.outputs.prepared-groups || needs.verify.outputs.export-groups) }}
     env:
       GROUP: ${{ matrix.group }}
       MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
@@ -485,14 +507,17 @@ jobs:
 
   certify-full-export:
     needs: [prepare, verify, replay-chunks]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && (needs['replay-chunks'].result == 'success' || (needs.prepare.outputs.previous-replay-run != '' && needs.prepare.outputs.remaining-chunks == '[]')) }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && (needs['replay-chunks'].result == 'success' || (needs.prepare.outputs.previous-replay-run != '' && needs.prepare.outputs.replay-items == '[]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
       PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
+      PREVIOUS_CHUNK_RUN: ${{ needs.prepare.outputs.previous-chunk-run }}
       PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
-      REMAINING_CHUNKS: ${{ needs.prepare.outputs.remaining-chunks }}
+      PREVIOUS_CHUNKS: ${{ needs.prepare.outputs.previous-chunks }}
+      REPLAY_ITEMS: ${{ needs.prepare.outputs.replay-items }}
+      REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -516,7 +541,14 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ env.PREVIOUS_REPLAY_RUN }}
       - uses: actions/download-artifact@v8
-        if: env.PREVIOUS_REPLAY_RUN != '' && env.REMAINING_CHUNKS != '[]'
+        if: env.PREVIOUS_CHUNK_RUN != '' && env.PREVIOUS_CHUNKS != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/continued
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_CHUNK_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_REPLAY_RUN != '' && env.REPLAY_ITEMS != '[]'
         with:
           pattern: export-replay-chunk-*
           path: ${{ runner.temp }}/export-replay-result/recovered
@@ -525,7 +557,7 @@ jobs:
           directory="$RUNNER_TEMP/export-replay-result"
           if [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
             python3 .github/scripts/recover-export-replay.py combine "$directory" \
-               "$MANIFEST_SHA256" "$PREVIOUS_WORKERS" "$REMAINING_CHUNKS"
+               "$MANIFEST_SHA256" "$REPLAY_PLAN"
           else
             python3 verification/export-replay/receipts.py finish "$directory/manifest.json" \
                "$MANIFEST_SHA256" "$directory/workers" "$directory/result.json"

@@ -54,15 +54,17 @@ The [parallel verification workflow](.github/workflows/comparator-parallel.yml) 
 
 The source build, axiom audit and compiled-declaration replay passed at commit `d148229`. [Passing GitHub Actions run](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44512055633) · [Source audit artifact](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44512055633/artifacts/14527185788)
 
-The parallel workflow’s `full-export` option compares the exported proof with a freshly built FC challenge and replays the full export in a fresh Lean kernel. The `with-nanoda` option adds the independent nanoda check. The full Lean replay at `4d781b5` reached GitHub’s six-hour job limit without a verdict. The earlier nanoda run ended when the runner shut down. [Full Lean replay](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44474828177) · [nanoda attempt](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942)
+The parallel workflow’s `full-export` option partitions the original NDJSON proof export into ordered chunks. Each job replays its assigned chunks in the Lean kernel and loads earlier chunks from the same export. An earlier chunk can be used as a dependency because its own replay is also required. The final job checks a receipt for every chunk against the same SHA-256 manifest. The statement and the kernel primitives are matched against a separately built FC challenge using Lake Comparator’s comparison code. The only permitted axioms are the three listed above. [Parallel replay code](verification/export-replay)
+
+The earlier single-process full Lean replay reached GitHub’s six-hour job limit. The `with-nanoda` option still runs the single-process Comparator with nanoda and Lean. [Single-process Lean attempt](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44474828177) · [nanoda attempt](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942)
 
 ### Certification within 90 days
 
-The compiled-declaration workflow uploads `source-audit-<run-id>-<attempt>` with the build and axiom log, the exact theorem signature, and the declaration replay log. Full-export runs upload a separate `comparator-<run-id>-<attempt>` artifact with the Comparator transcript. A successful full-export run also records the kernel verdicts in `fc-target.log`, the replay status, and `result.json`.
+The compiled-declaration workflow uploads `source-audit-<run-id>-<attempt>` with the build and axiom log, the exact theorem signature, and the declaration replay log. A successful parallel full-export run uploads `full-export-certificate-<run-id>-<attempt>` with the manifest, every worker replay log and receipt, and the combined `result.json`. The single-process Comparator uploads its transcript as `comparator-<run-id>-<attempt>`.
 
 ### Certification after 90 days
 
-Before an artifact expires, [archive-run.py](verification/archive-run.py) can preserve a successful full-export attempt with an authenticated GitHub CLI. It verifies the tested commit and GitHub's artifact digest and saves the original ZIPs, run metadata, verification logs, and `SHA256SUMS`.
+Before an artifact expires, [archive-run.py](verification/archive-run.py) can preserve a successful single-process Comparator attempt with an authenticated GitHub CLI. It verifies the tested commit and GitHub's artifact digest and saves the original ZIPs, run metadata, verification logs, and `SHA256SUMS`.
 
 ```sh
 python3 verification/archive-run.py --repo OWNER/REPO --run RUN_ID \

@@ -17,6 +17,9 @@ on:
         description: Check the full proof export with parallel Lean kernel replays
         type: boolean
         default: false
+      prepared-export-run:
+        description: Reuse the partitioned proof and FC comparison from an earlier run
+        type: string
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -37,6 +40,9 @@ jobs:
       verify-only: ${{ steps.seed.outputs.verify-only }}
       check-compiled-declaration: ${{ steps.seed.outputs.check-compiled-declaration }}
       split-export: ${{ steps.seed.outputs.split-export }}
+      prepared-run-id: ${{ steps.seed.outputs.prepared-run-id }}
+      prepared-groups: ${{ steps.seed.outputs.prepared-groups }}
+      prepared-manifest-sha256: ${{ steps.seed.outputs.prepared-manifest-sha256 }}
       wave0: ${{ steps.plan.outputs.wave0 }}
       wave1: ${{ steps.plan.outputs.wave1 }}
       wave2: ${{ steps.plan.outputs.wave2 }}
@@ -57,16 +63,46 @@ jobs:
           DISPATCH_VERIFY_ONLY: ${{ inputs.verify-only }}
           DISPATCH_FULL_EXPORT: ${{ inputs.full-export }}
           DISPATCH_WITH_NANODA: ${{ inputs.with-nanoda }}
+          DISPATCH_PREPARED_RUN: ${{ inputs.prepared-export-run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           seed_list="$DISPATCH_SEED"
           verify_only="$DISPATCH_VERIFY_ONLY"
           full_export="$DISPATCH_FULL_EXPORT"
+          prepared_run="$DISPATCH_PREPARED_RUN"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
             seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
             verify_only=$(printf '%s\n' "$trailers" | sed -n 's/^Verify-Only: //p')
             full_export=$(printf '%s\n' "$trailers" | sed -n 's/^Full-Export: //p')
+            prepared_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Export-Run: //p')
+          fi
+          if [[ -n "$prepared_run" ]]; then
+            [[ "$prepared_run" =~ ^[1-9][0-9]*$ ]]
+            prepared_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$prepared_run" --jq '
+              select(.status == "completed"
+                     and .head_branch == "ci/fc-782-unconditional"
+                     and .path == ".github/workflows/comparator-parallel.yml"
+                     and (.event == "push" or .event == "workflow_dispatch"))
+              | .head_sha')
+            [[ "$prepared_commit" =~ ^[0-9a-f]{40}$ ]]
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$prepared_run/jobs?per_page=100" --jq '
+              .jobs[] | select(.name == "verify" and .conclusion == "success") |
+              .steps[] | select(.name == "Partition the proof export and compare its FC statement") |
+              .conclusion' | grep -Fxq 'success'
+            git fetch --depth=1 origin "$prepared_commit"
+            git diff --exit-code "$prepared_commit" HEAD -- lean verification
+            directory="$RUNNER_TEMP/prepared-export"
+            gh run download "$prepared_run" --repo "$GITHUB_REPOSITORY" --name export-replay-manifest --dir "$directory"
+            manifest="$directory/manifest.json"
+            {
+              echo 'verify-only=true'
+              echo 'split-export=true'
+              echo "prepared-run-id=$prepared_run"
+              printf 'prepared-groups=%s\n' "$(jq -c '.groups | keys' "$manifest")"
+              printf 'prepared-manifest-sha256=%s\n' "$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [[ "$full_export" != 'true' && "$DISPATCH_WITH_NANODA" != 'true' ]]; then
             echo 'check-compiled-declaration=true' >> "$GITHUB_OUTPUT"
@@ -220,7 +256,7 @@ jobs:
 
   verify:
     needs: [prepare, wave6]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.wave6.result == 'success' || needs.prepare.outputs.verify-only == 'true') }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.prepared-run-id == '' && (needs.wave6.result == 'success' || needs.prepare.outputs.verify-only == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
@@ -342,16 +378,16 @@ jobs:
 
   replay-chunks:
     needs: [prepare, verify]
-    if: needs.prepare.outputs.split-export == 'true'
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && (needs.verify.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(needs.verify.outputs.export-groups) }}
+        group: ${{ fromJSON(needs.prepare.outputs.prepared-groups || needs.verify.outputs.export-groups) }}
     env:
       GROUP: ${{ matrix.group }}
-      MANIFEST_SHA256: ${{ needs.verify.outputs.manifest-sha256 }}
+      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
       LEAN_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v7
@@ -363,6 +399,21 @@ jobs:
           curl --proto '=https' --tlsv1.2 -fsSL https://elan.lean-lang.org/elan-init.sh -o "$installer"
           sh "$installer" -y --default-toolchain none --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Prepare the replay runner
+        run: |
+          if ! command -v zstd >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
+          available=$(df -Pm / | awk 'NR == 2 {print $4}')
+          swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
+          if (( available >= 40 * 1024 && swap < 12 * 1024**2 )); then
+            sudo fallocate -l 16G /var/tmp/lean-export.swap
+            sudo chmod 600 /var/tmp/lean-export.swap
+            sudo mkswap /var/tmp/lean-export.swap
+            sudo swapon /var/tmp/lean-export.swap
+          fi
+          free -h
       - name: Build the proof replay tool
         working-directory: verification/export-replay
         run: |
@@ -372,6 +423,8 @@ jobs:
         with:
           name: export-replay-chunks
           path: ${{ runner.temp }}
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.prepared-run-id || github.run_id }}
       - name: Replay assigned declarations in the Lean kernel
         run: |
           tar --zstd -xf "$RUNNER_TEMP/export-replay-chunks.tar.zst" -C "$RUNNER_TEMP"
@@ -392,11 +445,11 @@ jobs:
 
   certify-full-export:
     needs: [prepare, verify, replay-chunks]
-    if: needs.prepare.outputs.split-export == 'true'
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs['replay-chunks'].result == 'success' && needs.prepare.outputs.split-export == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      MANIFEST_SHA256: ${{ needs.verify.outputs.manifest-sha256 }}
+      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -405,6 +458,8 @@ jobs:
         with:
           name: export-replay-manifest
           path: ${{ runner.temp }}/export-replay-result
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.prepared-run-id || github.run_id }}
       - uses: actions/download-artifact@v8
         with:
           pattern: export-replay-worker-*

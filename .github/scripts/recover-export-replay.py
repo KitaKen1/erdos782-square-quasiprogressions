@@ -36,7 +36,8 @@ def successful_items(jobs_path, limit):
     return sorted(result)
 
 
-def plan(manifest_path, jobs_path, chunk_jobs_path=None, slice_jobs_path=None):
+def plan(manifest_path, jobs_path, chunk_jobs_path=None, slice_jobs_path=None,
+         nested_jobs_path=None):
     manifest = json.loads(manifest_path.read_text())
     workers = successful_items(jobs_path, len(manifest["groups"]))
     covered = {index for worker in workers for index in manifest["groups"][worker]}
@@ -54,6 +55,9 @@ def plan(manifest_path, jobs_path, chunk_jobs_path=None, slice_jobs_path=None):
                  for part in range(subslices)]
     else:
         items = slice_labels if slices > 1 else remaining
+    previous_nested = (sorted(set(successful_labels(nested_jobs_path)).intersection(items))
+                       if nested_jobs_path else [])
+    items = [item for item in items if item not in previous_nested]
     plan_data = {
         "workers": workers,
         "chunks": previous_chunks,
@@ -61,12 +65,14 @@ def plan(manifest_path, jobs_path, chunk_jobs_path=None, slice_jobs_path=None):
         "slices": slices,
         "previous_slices": previous_slices,
         "subslice_count": subslices,
+        "previous_nested": previous_nested,
     }
     print(f"replay-plan={json.dumps(plan_data)}")
     print(f"replay-items={json.dumps(items)}")
     print(f"previous-workers={json.dumps(workers)}")
     print(f"previous-chunks={json.dumps(previous_chunks)}")
     print(f"previous-slices={json.dumps(previous_slices)}")
+    print(f"previous-nested={json.dumps(previous_nested)}")
 
 
 def check(binary, directory, digest, item, receipt):
@@ -119,7 +125,9 @@ def slice_receipts(directory, plan, index):
             yield directory / "slices" / f"export-replay-chunk-{label}", {"slice": part}
         elif plan.get("subslice_count"):
             for subpart in range(plan["subslice_count"]):
-                path = directory / "recovered" / f"export-replay-chunk-{label}-{subpart}"
+                item = f"{label}-{subpart}"
+                source = "nested" if item in plan.get("previous_nested", []) else "recovered"
+                path = directory / source / f"export-replay-chunk-{item}"
                 yield path, {"slice": part, "subslice": subpart}
         else:
             yield directory / "recovered" / f"export-replay-chunk-{label}", {"slice": part}

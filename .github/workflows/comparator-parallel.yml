@@ -29,6 +29,9 @@ on:
       previous-slice-run:
         description: Reuse successful slices and subdivide the remaining slices
         type: string
+      previous-nested-run:
+        description: Reuse successful nested ranges from a previous replay
+        type: string
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -55,9 +58,11 @@ jobs:
       previous-replay-run: ${{ steps.seed.outputs.previous-replay-run }}
       previous-chunk-run: ${{ steps.seed.outputs.previous-chunk-run }}
       previous-slice-run: ${{ steps.seed.outputs.previous-slice-run }}
+      previous-nested-run: ${{ steps.seed.outputs.previous-nested-run }}
       previous-workers: ${{ steps.seed.outputs.previous-workers }}
       previous-chunks: ${{ steps.seed.outputs.previous-chunks }}
       previous-slices: ${{ steps.seed.outputs.previous-slices }}
+      previous-nested: ${{ steps.seed.outputs.previous-nested }}
       replay-items: ${{ steps.seed.outputs.replay-items }}
       replay-plan: ${{ steps.seed.outputs.replay-plan }}
       wave0: ${{ steps.plan.outputs.wave0 }}
@@ -84,6 +89,7 @@ jobs:
           DISPATCH_REPLAY_RUN: ${{ inputs.previous-replay-run }}
           DISPATCH_CHUNK_RUN: ${{ inputs.previous-chunk-run }}
           DISPATCH_SLICE_RUN: ${{ inputs.previous-slice-run }}
+          DISPATCH_NESTED_RUN: ${{ inputs.previous-nested-run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           seed_list="$DISPATCH_SEED"
@@ -93,6 +99,7 @@ jobs:
           replay_run="$DISPATCH_REPLAY_RUN"
           chunk_run="$DISPATCH_CHUNK_RUN"
           slice_run="$DISPATCH_SLICE_RUN"
+          nested_run="$DISPATCH_NESTED_RUN"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
             seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
@@ -102,6 +109,10 @@ jobs:
             replay_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Replay-Run: //p')
             chunk_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Chunk-Run: //p')
             slice_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Slice-Run: //p')
+            nested_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Nested-Run: //p')
+          fi
+          if [[ -n "$nested_run" ]]; then
+            [[ -n "$slice_run" && "$nested_run" =~ ^[1-9][0-9]*$ ]]
           fi
           if [[ -n "$slice_run" ]]; then
             [[ -n "$chunk_run" && "$slice_run" =~ ^[1-9][0-9]*$ ]]
@@ -148,6 +159,10 @@ jobs:
               if [[ -n "$slice_run" ]]; then
                 replay_runs+=("$slice_run")
                 echo "previous-slice-run=$slice_run" >> "$GITHUB_OUTPUT"
+              fi
+              if [[ -n "$nested_run" ]]; then
+                replay_runs+=("$nested_run")
+                echo "previous-nested-run=$nested_run" >> "$GITHUB_OUTPUT"
               fi
               job_files=()
               for previous_run in "${replay_runs[@]}"; do
@@ -531,9 +546,11 @@ jobs:
       PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
       PREVIOUS_CHUNK_RUN: ${{ needs.prepare.outputs.previous-chunk-run }}
       PREVIOUS_SLICE_RUN: ${{ needs.prepare.outputs.previous-slice-run }}
+      PREVIOUS_NESTED_RUN: ${{ needs.prepare.outputs.previous-nested-run }}
       PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
       PREVIOUS_CHUNKS: ${{ needs.prepare.outputs.previous-chunks }}
       PREVIOUS_SLICES: ${{ needs.prepare.outputs.previous-slices }}
+      PREVIOUS_NESTED: ${{ needs.prepare.outputs.previous-nested }}
       REPLAY_ITEMS: ${{ needs.prepare.outputs.replay-items }}
       REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan }}
     steps:
@@ -572,6 +589,13 @@ jobs:
           path: ${{ runner.temp }}/export-replay-result/slices
           github-token: ${{ github.token }}
           run-id: ${{ env.PREVIOUS_SLICE_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_NESTED_RUN != '' && env.PREVIOUS_NESTED != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/nested
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_NESTED_RUN }}
       - uses: actions/download-artifact@v8
         if: env.PREVIOUS_REPLAY_RUN != '' && env.REPLAY_ITEMS != '[]'
         with:

@@ -157,7 +157,8 @@ private def implicitPrimitives : Array Name :=
 -- The witness only controls unfolding. Every type and value comes from the
 -- original export, and dependencies outside the current block must precede it.
 private def projectedImports (prior : ProofPrefix) (target : Array ConstantInfo)
-    (transparent : Nat → Name → Bool) (additional : Array Name := #[]) :
+    (transparent : Nat → Name → Bool) (additional : Array Name := #[])
+    (preferUnfold : Array Name := #[]) :
     IO (Array ConstantInfo × Array Nat) := do
   let localNames := target.foldl (fun (s : NameHashSet) ci => s.insert ci.name) {}
   let base := implicitPrimitives.filter prior.declarations.contains
@@ -173,8 +174,14 @@ private def projectedImports (prior : ProofPrefix) (target : Array ConstantInfo)
     let some (index, ci) := prior.declarations[name]? |
       throw (IO.userError s!"Missing earlier declaration '{name}'")
     let projected := match ci with
-      | .defnInfo _ =>
-        if base.contains name || transparent index name then ci else opaqueView ci
+      | .defnInfo defn =>
+        if preferUnfold.contains name then
+          -- Abbreviations and regular definitions admit the same kernel
+          -- reduction. This only gives an already checked wrapper priority.
+          match defn.hints with
+          | .regular _ => .defnInfo { defn with hints := .abbrev }
+          | _ => ci
+        else if base.contains name || transparent index name then ci else opaqueView ci
       | _ => ci
     if projected.isDefinition then unfolded := unfolded.push index
     imports := imports.push projected
@@ -184,6 +191,7 @@ private def projectedImports (prior : ProofPrefix) (target : Array ConstantInfo)
 private structure ProjectionBlock where
   stop : Nat
   unfold : Array Nat
+  prefer : Option (Array String) := none
   deriving ToJson, FromJson
 
 private structure SourceBlock where
@@ -309,15 +317,16 @@ private def unavailableConstant (error : IO.Error) (prior : ProofPrefix) : Optio
   return name
 
 private unsafe def checkProjectionBlock (scratch : System.FilePath) (prior : ProofPrefix)
-    (target : Array ConstantInfo) (unfold : Array Nat) : IO Unit := do
-  let unfolded := unfold.foldl (fun (s : Std.HashSet Nat) n => s.insert n) {}
+    (target : Array ConstantInfo) (block : ProjectionBlock) : IO Unit := do
+  let unfolded := block.unfold.foldl (fun (s : Std.HashSet Nat) n => s.insert n) {}
+  let preference := (block.prefer.getD #[]).map String.toName
   let mod := `ProjectedExportContext
   let file := scratch / "ProjectedExportContext.olean"
   searchPathRef.set [scratch]
   let mut additional := #[]
   repeat
     let (declarations, _) ← projectedImports prior target (fun index _ => unfolded.contains index)
-      additional
+      additional preference
     saveModuleData file mod {
       isModule := false, imports := #[],
       constNames := declarations.map ConstantInfo.name, constants := declarations,
@@ -343,7 +352,7 @@ private unsafe def checkProjectedSlice (directory scratch : System.FilePath) (in
     unless start < block.stop && block.stop ≤ hi && admissibleCut data.constants block.stop do
       throw (IO.userError "Incomplete or invalid declaration range in projection plan")
     let target := data.constants.extract start block.stop
-    checkProjectionBlock scratch prior target block.unfold
+    checkProjectionBlock scratch prior target block
     IO.eprintln s!"Lean checked export declarations {start} to {block.stop} in a restricted environment"
     prior := prior.append target
     start := block.stop

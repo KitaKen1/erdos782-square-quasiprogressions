@@ -16,6 +16,8 @@ from receipts import checked_manifest, file_digest, finish, write_json
 
 SLICES_PER_CHUNK = 5
 SUBSLICES_PER_SLICE = 3
+PROFILED_PROOF = "891c600d9ffdef141ed03a3aca97ac6ad93cb9498b724376ad9e2f0397d36838"
+PROFILED_MANIFEST = "ac298be825c50872f70f341ddc49831756830ae8a1eac99121e3fc05805bd9c9"
 
 
 def successful_labels(jobs_path):
@@ -82,7 +84,41 @@ def plan(manifest_path, jobs_path, chunk_jobs_path=None, slice_jobs_path=None,
     print(f"previous-nested={json.dumps(previous_nested)}")
 
 
-def check(binary, directory, digest, item, receipt):
+def fresh_plan(manifest_path, run_id):
+    manifest = json.loads(manifest_path.read_text())
+    indices = list(range(len(manifest["chunks"])))
+    profiled = manifest["proof_sha256"] == PROFILED_PROOF and len(indices) == 33
+    split_chunks = {7, 13, 25} if profiled else set()
+    subdivided = ["7-4", "13-0", "25-1", "25-4"] if profiled else []
+    whole = [i for i in indices if i not in split_chunks]
+    items = [str(i) for i in whole]
+    for i in sorted(split_chunks):
+        for part in range(SLICES_PER_CHUNK):
+            label = f"{i}-{part}"
+            if label in subdivided:
+                items.extend(f"{label}-{sub}" for sub in range(SUBSLICES_PER_SLICE))
+            else:
+                items.append(label)
+    # These ranges and chunks took longest in the profiled export.
+    priority = ["25-4-1", "25-1-0", "13-0-0", "7-4-2", "21", "24", "26", "19", "17"]
+    if profiled:
+        items = priority + [item for item in items if item not in priority]
+    data = {
+        "fresh_export_run": run_id,
+        "workers": [],
+        "chunks": [],
+        "remaining": indices,
+        "whole_chunks": whole,
+        "slices": SLICES_PER_CHUNK,
+        "subslice_count": SUBSLICES_PER_SLICE,
+        "subdivided_slices": subdivided,
+        "recovered_items": items,
+    }
+    print(f"fresh-export-plan={json.dumps(data)}")
+    print(f"fresh-export-items={json.dumps(items)}")
+
+
+def check(binary, directory, digest, item, receipt, fresh_run=""):
     manifest = checked_manifest(directory, digest)
     index_text, separator, label = item.partition("-")
     index = int(index_text)
@@ -93,6 +129,8 @@ def check(binary, directory, digest, item, receipt):
         "manifest_sha256": digest,
         "sha256": manifest["chunks"][index],
     }
+    if fresh_run:
+        info["fresh_export_run"] = fresh_run
     print(f"Replaying work item {item}.", flush=True)
     if separator:
         part, _, subpart = label.partition("-")
@@ -101,6 +139,11 @@ def check(binary, directory, digest, item, receipt):
             options.extend((subpart, str(SUBSLICES_PER_SLICE)))
         with tempfile.TemporaryDirectory(prefix="export-replay-prefix-") as scratch:
             hint = REPLAY_HOME / "projections" / digest / f"{item}.json.gz"
+            if (not hint.is_file() and manifest["proof_sha256"] == PROFILED_PROOF
+                    and len(manifest["chunks"]) == 33):
+                # These unfolding choices depend on the exported declarations,
+                # whose byte sequence is fixed by proof_sha256.
+                hint = REPLAY_HOME / "projections" / PROFILED_MANIFEST / f"{item}.json.gz"
             command = "check-slice"
             if subpart and hint.is_file():
                 hint_file = Path(scratch) / "visibility.json"
@@ -130,7 +173,8 @@ def slice_receipts(directory, plan, index):
         label = f"{index}-{part}"
         if label in plan.get("previous_slices", []):
             yield directory / "slices" / f"export-replay-chunk-{label}", {"slice": part}
-        elif plan.get("subslice_count"):
+        elif (plan.get("subslice_count")
+              and label in plan.get("subdivided_slices", [label])):
             for subpart in range(plan["subslice_count"]):
                 item = f"{label}-{subpart}"
                 source = "nested" if item in plan.get("previous_nested", []) else "recovered"
@@ -171,7 +215,10 @@ def combine(directory, digest, plan):
     workers = directory / "workers"
     covered = {}
     def chunk_info(index):
-        return {"index": index, "manifest_sha256": digest, "sha256": manifest["chunks"][index]}
+        info = {"index": index, "manifest_sha256": digest, "sha256": manifest["chunks"][index]}
+        if "fresh_export_run" in plan:
+            info["fresh_export_run"] = plan["fresh_export_run"]
+        return info
 
     for worker in plan["workers"]:
         receipt_path = directory / "previous" / f"export-replay-worker-{worker}" / "receipt.json"
@@ -200,7 +247,7 @@ def combine(directory, digest, plan):
         expected = chunk_info(index)
         if index in covered:
             raise SystemExit(f"Duplicate chunk {index}")
-        if plan["slices"] == 1:
+        if plan["slices"] == 1 or index in plan.get("whole_chunks", []):
             receipt_path = directory / "recovered" / f"export-replay-chunk-{index}" / "receipt.json"
             receipt = json.loads(receipt_path.read_text())
             valid = receipt == expected
@@ -238,11 +285,14 @@ if __name__ == "__main__":
     command, *args = sys.argv[1:]
     if command == "plan":
         plan(*map(Path, args))
+    elif command == "fresh-plan":
+        manifest, run_id = args
+        fresh_plan(Path(manifest), run_id)
     elif command == "check":
-        binary, directory, digest, index, receipt = args
-        check(Path(binary), Path(directory), digest, index, Path(receipt))
+        binary, directory, digest, index, receipt, *fresh_run = args
+        check(Path(binary), Path(directory), digest, index, Path(receipt), *fresh_run)
     elif command == "combine":
         directory, digest, plan_json = args
         combine(Path(directory), digest, json.loads(plan_json))
     else:
-        raise SystemExit("Expected plan, check, or combine.")
+        raise SystemExit("Expected plan, fresh-plan, check, or combine.")

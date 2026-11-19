@@ -356,6 +356,8 @@ jobs:
     outputs:
       export-groups: ${{ steps.partition.outputs.groups }}
       manifest-sha256: ${{ steps.partition.outputs.manifest-sha256 }}
+      fresh-export-plan: ${{ steps.partition.outputs.fresh-export-plan }}
+      fresh-export-items: ${{ steps.partition.outputs.fresh-export-items }}
     env:
       LEAN_NUM_THREADS: "1"
     steps:
@@ -432,6 +434,8 @@ jobs:
              ./verification/export-replay/.lake/build/bin/export-replay \
              "$RUNNER_TEMP/erdos782-proof.ndjson" "$RUNNER_TEMP/fc-challenge.ndjson" \
              "$RUNNER_TEMP/export-replay-chunks" 3000000
+          python3 .github/scripts/recover-export-replay.py fresh-plan \
+             "$RUNNER_TEMP/export-replay-chunks/manifest.json" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
           tar -C "$RUNNER_TEMP" -cf - export-replay-chunks |
             zstd -T2 -3 -o "$RUNNER_TEMP/export-replay-chunks.tar.zst"
           cat "$RUNNER_TEMP/actions-outputs.txt" >> "$GITHUB_OUTPUT"
@@ -477,12 +481,14 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix:
-        group: ${{ fromJSON(needs.prepare.outputs.replay-items || needs.prepare.outputs.prepared-groups || needs.verify.outputs.export-groups) }}
+        group: ${{ fromJSON(needs.prepare.outputs.replay-items || needs.prepare.outputs.prepared-groups || needs.verify.outputs.fresh-export-items || needs.verify.outputs.export-groups) }}
     env:
       GROUP: ${{ matrix.group }}
       MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
       PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
+      FRESH_EXPORT_RUN: ${{ needs.verify.outputs.fresh-export-plan != '' && github.run_id || '' }}
       LEAN_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v7
@@ -531,7 +537,11 @@ jobs:
           directory="$RUNNER_TEMP/export-replay-chunks"
           receipt="$RUNNER_TEMP/export-replay-receipt"
           binary=./verification/export-replay/.lake/build/bin/export-replay
-          if [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
+          replay_args=("$binary" "$directory" "$MANIFEST_SHA256" "$GROUP" "$receipt/receipt.json")
+          if [[ -n "$FRESH_EXPORT_RUN" ]]; then
+            checker=(python3 .github/scripts/recover-export-replay.py check)
+            replay_args+=("$FRESH_EXPORT_RUN")
+          elif [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
             checker=(python3 .github/scripts/recover-export-replay.py check)
           else
             checker=(python3 verification/export-replay/receipts.py replay)
@@ -540,12 +550,12 @@ jobs:
           sudo systemd-run --quiet --scope -p MemoryHigh=11G -p MemoryMax=12G \
              -p MemorySwapMax=27G runuser -u "$(id -un)" -- \
              env LEAN_NUM_THREADS=1 /usr/bin/time -v nice -n 10 "${checker[@]}" \
-             "$binary" "$directory" "$MANIFEST_SHA256" "$GROUP" "$receipt/receipt.json" 2>&1 |
+             "${replay_args[@]}" 2>&1 |
             tee "$receipt/replay.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: ${{ needs.prepare.outputs.previous-replay-run != '' && 'export-replay-chunk' || 'export-replay-worker' }}-${{ matrix.group }}
+          name: ${{ (needs.prepare.outputs.previous-replay-run != '' || needs.verify.outputs.fresh-export-plan != '') && 'export-replay-chunk' || 'export-replay-worker' }}-${{ matrix.group }}
           path: ${{ runner.temp }}/export-replay-receipt/
           overwrite: true
           retention-days: 90
@@ -563,12 +573,13 @@ jobs:
       PREVIOUS_SLICE_RUN: ${{ needs.prepare.outputs.previous-slice-run }}
       PREVIOUS_NESTED_RUN: ${{ needs.prepare.outputs.previous-nested-run }}
       COMPLETED_REPLAY_RUN: ${{ needs.prepare.outputs.completed-replay-run }}
+      FRESH_EXPORT_PLAN: ${{ needs.verify.outputs.fresh-export-plan }}
       PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
       PREVIOUS_CHUNKS: ${{ needs.prepare.outputs.previous-chunks }}
       PREVIOUS_SLICES: ${{ needs.prepare.outputs.previous-slices }}
       PREVIOUS_NESTED: ${{ needs.prepare.outputs.previous-nested }}
-      RECOVERED_ITEMS: ${{ needs.prepare.outputs.recovered-items }}
-      REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan }}
+      RECOVERED_ITEMS: ${{ needs.prepare.outputs.recovered-items || needs.verify.outputs.fresh-export-items }}
+      REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan || needs.verify.outputs.fresh-export-plan }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -580,7 +591,7 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.prepared-run-id || github.run_id }}
       - uses: actions/download-artifact@v8
-        if: env.PREVIOUS_REPLAY_RUN == ''
+        if: env.REPLAY_PLAN == ''
         with:
           pattern: export-replay-worker-*
           path: ${{ runner.temp }}/export-replay-result/workers
@@ -613,7 +624,7 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ env.PREVIOUS_NESTED_RUN }}
       - uses: actions/download-artifact@v8
-        if: env.PREVIOUS_REPLAY_RUN != '' && env.RECOVERED_ITEMS != '[]'
+        if: env.REPLAY_PLAN != '' && env.RECOVERED_ITEMS != '[]'
         with:
           pattern: export-replay-chunk-*
           path: ${{ runner.temp }}/export-replay-result/recovered
@@ -622,7 +633,10 @@ jobs:
       - name: Confirm that Lean checked the entire proof export
         run: |
           directory="$RUNNER_TEMP/export-replay-result"
-          if [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
+          if [[ -n "$FRESH_EXPORT_PLAN" ]]; then
+            jq -e --arg run "$GITHUB_RUN_ID" '.fresh_export_run == $run' <<< "$REPLAY_PLAN" > /dev/null
+          fi
+          if [[ -n "$REPLAY_PLAN" ]]; then
             python3 .github/scripts/recover-export-replay.py combine "$directory" \
                "$MANIFEST_SHA256" "$REPLAY_PLAN"
           else

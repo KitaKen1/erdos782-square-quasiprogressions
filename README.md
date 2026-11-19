@@ -50,19 +50,19 @@ The bound also holds for $k\le N$. It depends only on $C$, which proves the conj
 
 ## Appendix: Verification by Lean Comparator on GitHub CI runner
 
-The [parallel Lean comparator workflow](.github/workflows/comparator-parallel.yml) runs on pushes to this branch. The [single-runner workflow](.github/workflows/comparator.yml) is available from the Actions tab. It checks the pinned FC snapshot and builds the reference statement in a project with the pinned Mathlib dependency. The workflows use the pinned public Stacks and Mordell cache. The parallel workflow builds the remaining dependencies in topological order across its jobs. The final job builds the candidate, exports the proof with Lean, and compares it against the reference. Comparator permits only `propext`, `Classical.choice`, and `Quot.sound`. The automatic workflow compares the propositions and replays the entire export in a fresh Lean kernel. Enable `with-nanoda` when dispatching the parallel workflow manually to run the additional nanoda check. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
+The [parallel verification workflow](.github/workflows/comparator-parallel.yml) checks the exact FC target on every push to the CI branch. It uses the pinned Stacks and Mordell cache and builds the remaining dependencies in topological order. Lean checks the source theorem, audits its axioms, and replays `Comparator.Candidate` using the pinned compiled imports. The axiom audit allows `propext`, `Classical.choice`, and `Quot.sound`. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
 
-At commit `d650ac0`, the source build, exact FC target audit, and proof export passed. GitHub shut down the runner during the nanoda check. [GitHub Actions job](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942/job/135181001755) · [Source audit artifact](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942/artifacts/14480831726)
+The source build, axiom audit and compiled-declaration replay passed at commit `d148229`. [Passing GitHub Actions run](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44512055633) · [Source audit artifact](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44512055633/artifacts/14527185788)
 
-The workflow also supports a compiled-declaration check. It builds the exact source target, checks its axioms, and replays the compiled theorem with the pinned imports. Its transcript is in the source audit artifact.
+The parallel workflow’s `full-export` option compares the exported proof with a freshly built FC challenge and replays the full export in a fresh Lean kernel. The `with-nanoda` option adds the independent nanoda check. The full Lean replay at `4d781b5` reached GitHub’s six-hour job limit without a verdict. The earlier nanoda run ended when the runner shut down. [Full Lean replay](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44474828177) · [nanoda attempt](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942)
 
 ### Certification within 90 days
 
-Each workflow attempt uploads an artifact named `comparator-<run-id>-<attempt>` with 90-day retention. A successful attempt contains the checked Lean signature in `statement.log`, the Lean kernel verdict in `fc-target.log`, the checked kernels in `result.json`, and the replay status. A run with nanoda enabled also records its verdict and the standalone Lean replay log.
+The compiled-declaration workflow uploads `source-audit-<run-id>-<attempt>` with the build and axiom log, the exact theorem signature, and the declaration replay log. Full-export runs upload a separate `comparator-<run-id>-<attempt>` artifact with the Comparator transcript. A successful full-export run also records the kernel verdicts in `fc-target.log`, the replay status, and `result.json`.
 
 ### Certification after 90 days
 
-Before an artifact expires, [archive-run.py](verification/archive-run.py) can preserve a successful attempt with an authenticated GitHub CLI. It verifies the tested commit and GitHub's artifact digest and saves the original ZIPs, run metadata, verification logs, and `SHA256SUMS`.
+Before an artifact expires, [archive-run.py](verification/archive-run.py) can preserve a successful full-export attempt with an authenticated GitHub CLI. It verifies the tested commit and GitHub's artifact digest and saves the original ZIPs, run metadata, verification logs, and `SHA256SUMS`.
 
 ```sh
 python3 verification/archive-run.py --repo OWNER/REPO --run RUN_ID \
@@ -80,7 +80,7 @@ python3 verification/verify.py
 bash verification/export-solution.sh /tmp/erdos782-proof.ndjson.gz
 ```
 
-For a trusted macOS checkout, pass `--trusted-local` to `verification/verify.py`. To check a previously generated proof export, decompress the archive and pass its NDJSON path with `--solution-export`. Add `--lean-only` to reproduce the automatic workflow’s kernel check.
+For a trusted macOS checkout, pass `--trusted-local` to `verification/verify.py`. To check a previously generated proof export, decompress the archive and pass its NDJSON path with `--solution-export`. Add `--lean-only` to run the full-export comparison with only Lean. For the automatic workflow’s compiled-declaration replay, run `(cd lean && lake env leanchecker --verbose Comparator.Candidate)` after the source build.
 
 ## AI usage disclosure
 

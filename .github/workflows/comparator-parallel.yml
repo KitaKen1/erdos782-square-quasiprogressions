@@ -9,6 +9,10 @@ on:
         description: Verify the full proof using completed dependency artifacts
         type: boolean
         default: false
+      with-nanoda:
+        description: Also run the independent nanoda kernel
+        type: boolean
+        default: false
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -262,8 +266,15 @@ jobs:
           df -h /
           nice -n 10 ionice -c 2 -n 6 bash verification/export-solution.sh --raw "$RUNNER_TEMP/erdos782-proof.ndjson"
           sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson" | cut -d ' ' -f 1 > verification/results/solution.sha256
-      - name: Verify the unconditional declaration with Lean and nanoda
-        run: nice -n 10 ionice -c 2 -n 6 python3 verification/verify.py --solution-export "$RUNNER_TEMP/erdos782-proof.ndjson"
+      - name: Compare the proof against the pinned FC statement
+        env:
+          WITH_NANODA: ${{ inputs.with-nanoda }}
+        run: |
+          options=(--solution-export "$RUNNER_TEMP/erdos782-proof.ndjson")
+          if [[ "$WITH_NANODA" != 'true' ]]; then
+            options+=(--lean-only)
+          fi
+          nice -n 10 ionice -c 2 -n 6 python3 verification/verify.py "${options[@]}"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

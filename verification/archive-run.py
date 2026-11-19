@@ -49,20 +49,24 @@ def main():
             raise SystemExit("The artifact ZIP failed its integrity check.")
         files = {
             name: archive.read(name)
-            for name in ("result.json", "fc-target.log", "replay.log", "replay-status.txt")
+            for name in ("result.json", "fc-target.log", "replay-status.txt")
         }
-        if "statement.log" in archive.namelist():
-            files["statement.log"] = archive.read("statement.log")
+        for name in ("statement.log", "replay.log"):
+            if name in archive.namelist():
+                files[name] = archive.read(name)
     result = json.loads(files["result.json"])
+    kernels = result.get("kernels")
+    log = files["fc-target.log"]
     if (result.get("accepted") is not True or result.get("lake_bubblewrap") is not True
             or result.get("targets") not in (
                 ["Erdos782.erdos_782.parts.i_neg"], ["Erdos782.part_i_negative"],
             )
             or files["replay-status.txt"] != b"PASS\n"
-            or not all(verdict in files["fc-target.log"] for verdict in (
-                b"nanoda kernel accepts the solution",
-                b"Lean default kernel accepts the solution",
-                b"Your solution is okay!",
+            or kernels not in (["Lean"], ["Lean", "nanoda"])
+            or b"Lean default kernel accepts the solution" not in log
+            or b"Your solution is okay!" not in log
+            or (kernels == ["Lean", "nanoda"] and (
+                b"nanoda kernel accepts the solution" not in log or "replay.log" not in files
             ))):
         raise SystemExit("Expected a passing sandboxed Comparator check and fresh replay.")
 

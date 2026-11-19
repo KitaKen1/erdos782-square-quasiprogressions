@@ -50,13 +50,13 @@ The bound also holds for $k\le N$. It depends only on $C$, which proves the conj
 
 ## Appendix: Verification by Lean Comparator on GitHub CI runner
 
-The [parallel Lean comparator workflow](.github/workflows/comparator-parallel.yml) runs on pushes to this branch. The [single-runner workflow](.github/workflows/comparator.yml) is available from the Actions tab. It checks the pinned FC snapshot and builds the reference statement in a project with the pinned Mathlib dependency. The workflows use the pinned public Stacks and Mordell cache. The parallel workflow builds the remaining dependencies in topological order across its jobs. The final job builds the candidate, exports the proof with Lean, and compares it against the reference. Comparator permits only `propext`, `Classical.choice`, and `Quot.sound`. It checks the exported proof with nanoda and Lean’s kernel. A fresh Lean kernel also replays the export. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
+The [parallel Lean comparator workflow](.github/workflows/comparator-parallel.yml) runs on pushes to this branch. The [single-runner workflow](.github/workflows/comparator.yml) is available from the Actions tab. It checks the pinned FC snapshot and builds the reference statement in a project with the pinned Mathlib dependency. The workflows use the pinned public Stacks and Mordell cache. The parallel workflow builds the remaining dependencies in topological order across its jobs. The final job builds the candidate, exports the proof with Lean, and compares it against the reference. Comparator permits only `propext`, `Classical.choice`, and `Quot.sound`. The automatic workflow compares the propositions and replays the entire export in a fresh Lean kernel. Enable `with-nanoda` when dispatching the parallel workflow manually to run the additional nanoda check. [Source check](verification/prepare_sources.py) · [Comparator configuration](lean/comparator.json)
 
-The proof and workflow under verification are at commit `2b11bcc`. [GitHub Actions run](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44353268582)
+At commit `d650ac0`, the source build, exact FC target audit, and proof export passed. GitHub shut down the runner during the nanoda check. [GitHub Actions job](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942/job/135181001755) · [Source audit artifact](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942/artifacts/14480831726)
 
 ### Certification within 90 days
 
-Each workflow attempt uploads an artifact named `comparator-<run-id>-<attempt>` with 90-day retention. A successful attempt contains the checked Lean signature in `statement.log`, both kernel verdicts in `fc-target.log`, the result in `result.json`, and the fresh replay log and status.
+Each workflow attempt uploads an artifact named `comparator-<run-id>-<attempt>` with 90-day retention. A successful attempt contains the checked Lean signature in `statement.log`, the Lean kernel verdict in `fc-target.log`, the checked kernels in `result.json`, and the replay status. A run with nanoda enabled also records its verdict and the standalone Lean replay log.
 
 ### Certification after 90 days
 
@@ -78,7 +78,7 @@ python3 verification/verify.py
 bash verification/export-solution.sh /tmp/erdos782-proof.ndjson.gz
 ```
 
-For a trusted macOS checkout, pass `--trusted-local` to `verification/verify.py`. To check a previously generated proof export, decompress the archive and pass its NDJSON path with `--solution-export`.
+For a trusted macOS checkout, pass `--trusted-local` to `verification/verify.py`. To check a previously generated proof export, decompress the archive and pass its NDJSON path with `--solution-export`. Add `--lean-only` to reproduce the automatic workflow’s kernel check.
 
 ## AI usage disclosure
 

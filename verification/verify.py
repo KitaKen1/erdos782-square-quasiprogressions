@@ -10,11 +10,8 @@ from tempfile import TemporaryDirectory
 VERIFICATION = Path(__file__).resolve().parent
 LEAN = VERIFICATION.parent / "lean"
 RESULTS = VERIFICATION / "results"
-VERDICTS = (
-    "nanoda kernel accepts the solution",
-    "Lean default kernel accepts the solution",
-    "Your solution is okay!",
-)
+LEAN_VERDICTS = ("Lean default kernel accepts the solution", "Your solution is okay!")
+NANODA_VERDICT = "nanoda kernel accepts the solution"
 
 
 def run(log_name, command, cwd=LEAN):
@@ -34,14 +31,18 @@ def run(log_name, command, cwd=LEAN):
     return path.read_text(encoding="utf-8")
 
 
-def prepare_challenge(directory):
+def prepare_challenge(directory, lean_only=False):
     """Build the reference using only the same pinned Mathlib dependency."""
     (directory / "Comparator").mkdir()
     for name in ("FCStatement.lean", "Challenge.lean"):
         source = LEAN / "Comparator" / name
         (directory / "Comparator" / name).write_bytes(source.read_bytes())
-    for name in ("lean-toolchain", "comparator.json"):
-        (directory / name).write_bytes((LEAN / name).read_bytes())
+    (directory / "lean-toolchain").write_bytes((LEAN / "lean-toolchain").read_bytes())
+    config = json.loads((LEAN / "comparator.json").read_text(encoding="utf-8"))
+    if lean_only:
+        config.pop("external_kernels", None)
+        config.pop("enable_nanoda", None)
+    (directory / "comparator.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     manifest = json.loads((LEAN / "lake-manifest.json").read_text(encoding="utf-8"))
     manifest["packages"] = [
         package for package in manifest["packages"] if package["name"] not in {"Mordell", "Stacks"}
@@ -61,10 +62,10 @@ def prepare_challenge(directory):
     )
 
 
-def check_export(solution, command):
+def check_export(solution, command, lean_only):
     with TemporaryDirectory(prefix="erdos782-challenge-") as temp:
         challenge = Path(temp)
-        prepare_challenge(challenge)
+        prepare_challenge(challenge, lean_only)
         run("cache.log", [
             "lake", "exe", "cache", "get",
             "Mathlib.Algebra.Group.Even", "Mathlib.Data.Set.Defs",
@@ -79,8 +80,8 @@ def check_export(solution, command):
         )
         run("statement.log", ["lake", "env", "lean", str(check)], cwd=challenge)
         log = run("fc-target.log", command + ["--solution-from-export", str(solution)], cwd=challenge)
-        run("replay.log", ["lake", "env", "leanchecker", "--from-export", str(solution)], cwd=challenge)
-        (RESULTS / "replay-status.txt").write_text("PASS\n", encoding="utf-8")
+        if not lean_only:
+            run("replay.log", ["lake", "env", "leanchecker", "--from-export", str(solution)], cwd=challenge)
         return log
 
 
@@ -94,28 +95,37 @@ def main():
         "--solution-export", type=Path,
         help="Compare a Lean NDJSON proof export against a freshly built challenge",
     )
+    parser.add_argument(
+        "--lean-only", action="store_true",
+        help="Use Comparator's fresh Lean kernel replay without the additional nanoda checker",
+    )
     args = parser.parse_args()
+    if args.lean_only and not args.solution_export:
+        parser.error("--lean-only requires --solution-export")
 
     RESULTS.mkdir(exist_ok=True)
-    for receipt in ("result.json", "replay-status.txt"):
+    for receipt in ("result.json", "replay-status.txt", "replay.log"):
         (RESULTS / receipt).unlink(missing_ok=True)
     command = ["lake", "env", "lake", "comparator"]
     if args.trusted_local:
         command.append("--inadvisably-no-sandbox")
     if args.solution_export:
-        log = check_export(args.solution_export.resolve(strict=True), command)
+        log = check_export(args.solution_export.resolve(strict=True), command, args.lean_only)
     else:
         run("build.log", ["lake", "build", "Comparator.Challenge", "Comparator.Candidate"])
         run("statement.log", ["lake", "env", "lean", "../verification/Check.lean"])
         log = run("fc-target.log", command)
-    if any(verdict not in log for verdict in VERDICTS):
-        raise SystemExit("Comparator did not report acceptance by both kernels.")
+    verdicts = LEAN_VERDICTS if args.lean_only else (*LEAN_VERDICTS, NANODA_VERDICT)
+    if any(verdict not in log for verdict in verdicts):
+        raise SystemExit("Comparator did not report acceptance by the configured kernels.")
+    if args.solution_export:
+        (RESULTS / "replay-status.txt").write_text("PASS\n", encoding="utf-8")
 
     config = json.loads((LEAN / "comparator.json").read_text(encoding="utf-8"))
     receipt = {
         "accepted": True,
         "targets": config["theorem_names"],
-        "kernels": ["Lean", "nanoda"],
+        "kernels": ["Lean"] if args.lean_only else ["Lean", "nanoda"],
         "lake_bubblewrap": not args.trusted_local,
         "scope": "unconditional negation of the pinned FC 782(i) proposition",
         "solution_input": "proof export" if args.solution_export else "Lean source",

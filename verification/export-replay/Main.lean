@@ -82,13 +82,19 @@ private def sliceBoundaries (declarations : Array ConstantInfo) (parts : Nat) :
     bounds := bounds.push cut
   return bounds.push size
 
-private def checkSlice (directory scratch : System.FilePath) (index part parts : Nat) :
-    IO Unit := do
+private def checkSlice (directory scratch : System.FilePath) (index part parts : Nat)
+    (subSlice : Option (Nat × Nat) := none) : IO Unit := do
   let data ← getChunk directory index
   let bounds ← sliceBoundaries data.constants parts
   unless part < parts do throw (IO.userError "Invalid slice index")
-  let lo := bounds[part]!
-  let hi := bounds[part + 1]!
+  let start := bounds[part]!
+  let stop := bounds[part + 1]!
+  let (lo, hi, label) ← match subSlice with
+    | none => pure (start, stop, toString part)
+    | some (subPart, subParts) => do
+      unless subPart < subParts do throw (IO.userError "Invalid nested slice index")
+      let offsets ← sliceBoundaries (data.constants.extract start stop) subParts
+      pure (start + offsets[subPart]!, start + offsets[subPart + 1]!, s!"{part}-{subPart}")
   let mut imports := data.imports
   searchPathRef.set [scratch, directory]
   if lo > 0 then
@@ -105,7 +111,7 @@ private def checkSlice (directory scratch : System.FilePath) (index part parts :
   let imported ←
     if imports.isEmpty then mkEmptyEnvironment else importModules imports {}
   checkDeclarations imported (data.constants.extract lo hi)
-  IO.println s!"Lean kernel accepted chunk {index}, slice {part} ({lo} to {hi} of {data.constants.size} declarations)"
+  IO.println s!"Lean kernel accepted chunk {index}, slice {label} ({lo} to {hi} of {data.constants.size} declarations)"
 
 private def compareProof (directory : System.FilePath) (count : Nat)
     (challengePath : System.FilePath) : IO Unit := do
@@ -144,7 +150,12 @@ def main (args : List String) : IO Unit := do
     let some index := index.toNat? | throw (IO.userError "Expected a chunk index")
     let some part := part.toNat? | throw (IO.userError "Expected a slice index")
     checkSlice ⟨directory⟩ ⟨scratch⟩ index part (← positive parts)
+  | ["check-slice", directory, scratch, index, part, parts, subPart, subParts] =>
+    let some index := index.toNat? | throw (IO.userError "Expected a chunk index")
+    let some part := part.toNat? | throw (IO.userError "Expected a slice index")
+    let some subPart := subPart.toNat? | throw (IO.userError "Expected a nested slice index")
+    checkSlice ⟨directory⟩ ⟨scratch⟩ index part (← positive parts) (some (subPart, ← positive subParts))
   | ["compare", directory, count, challenge] =>
     compareProof ⟨directory⟩ (← positive count) ⟨challenge⟩
   | _ =>
-    throw (IO.userError "Usage: export-replay split PROOF NEW_DIRECTORY BATCH_LINES | check DIRECTORY INDEX | check-slice DIRECTORY SCRATCH INDEX PART PARTS | compare DIRECTORY COUNT CHALLENGE")
+    throw (IO.userError "Usage: export-replay split PROOF NEW_DIRECTORY BATCH_LINES | check DIRECTORY INDEX | check-slice DIRECTORY SCRATCH INDEX PART PARTS [SUB_PART SUB_PARTS] | compare DIRECTORY COUNT CHALLENGE")

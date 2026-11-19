@@ -26,6 +26,9 @@ on:
       previous-chunk-run:
         description: Reuse successful individual chunks and subdivide the remaining chunks
         type: string
+      previous-slice-run:
+        description: Reuse successful slices and subdivide the remaining slices
+        type: string
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -51,8 +54,10 @@ jobs:
       prepared-manifest-sha256: ${{ steps.seed.outputs.prepared-manifest-sha256 }}
       previous-replay-run: ${{ steps.seed.outputs.previous-replay-run }}
       previous-chunk-run: ${{ steps.seed.outputs.previous-chunk-run }}
+      previous-slice-run: ${{ steps.seed.outputs.previous-slice-run }}
       previous-workers: ${{ steps.seed.outputs.previous-workers }}
       previous-chunks: ${{ steps.seed.outputs.previous-chunks }}
+      previous-slices: ${{ steps.seed.outputs.previous-slices }}
       replay-items: ${{ steps.seed.outputs.replay-items }}
       replay-plan: ${{ steps.seed.outputs.replay-plan }}
       wave0: ${{ steps.plan.outputs.wave0 }}
@@ -78,6 +83,7 @@ jobs:
           DISPATCH_PREPARED_RUN: ${{ inputs.prepared-export-run }}
           DISPATCH_REPLAY_RUN: ${{ inputs.previous-replay-run }}
           DISPATCH_CHUNK_RUN: ${{ inputs.previous-chunk-run }}
+          DISPATCH_SLICE_RUN: ${{ inputs.previous-slice-run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           seed_list="$DISPATCH_SEED"
@@ -86,6 +92,7 @@ jobs:
           prepared_run="$DISPATCH_PREPARED_RUN"
           replay_run="$DISPATCH_REPLAY_RUN"
           chunk_run="$DISPATCH_CHUNK_RUN"
+          slice_run="$DISPATCH_SLICE_RUN"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
             seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
@@ -94,6 +101,10 @@ jobs:
             prepared_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Export-Run: //p')
             replay_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Replay-Run: //p')
             chunk_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Chunk-Run: //p')
+            slice_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Slice-Run: //p')
+          fi
+          if [[ -n "$slice_run" ]]; then
+            [[ -n "$chunk_run" && "$slice_run" =~ ^[1-9][0-9]*$ ]]
           fi
           if [[ -n "$chunk_run" ]]; then
             [[ -n "$replay_run" && "$chunk_run" =~ ^[1-9][0-9]*$ ]]
@@ -132,6 +143,10 @@ jobs:
               if [[ -n "$chunk_run" ]]; then
                 replay_runs+=("$chunk_run")
                 echo "previous-chunk-run=$chunk_run" >> "$GITHUB_OUTPUT"
+              fi
+              if [[ -n "$slice_run" ]]; then
+                replay_runs+=("$slice_run")
+                echo "previous-slice-run=$slice_run" >> "$GITHUB_OUTPUT"
               fi
               job_files=()
               for previous_run in "${replay_runs[@]}"; do
@@ -514,8 +529,10 @@ jobs:
       MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
       PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
       PREVIOUS_CHUNK_RUN: ${{ needs.prepare.outputs.previous-chunk-run }}
+      PREVIOUS_SLICE_RUN: ${{ needs.prepare.outputs.previous-slice-run }}
       PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
       PREVIOUS_CHUNKS: ${{ needs.prepare.outputs.previous-chunks }}
+      PREVIOUS_SLICES: ${{ needs.prepare.outputs.previous-slices }}
       REPLAY_ITEMS: ${{ needs.prepare.outputs.replay-items }}
       REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan }}
     steps:
@@ -547,6 +564,13 @@ jobs:
           path: ${{ runner.temp }}/export-replay-result/continued
           github-token: ${{ github.token }}
           run-id: ${{ env.PREVIOUS_CHUNK_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_SLICE_RUN != '' && env.PREVIOUS_SLICES != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/slices
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_SLICE_RUN }}
       - uses: actions/download-artifact@v8
         if: env.PREVIOUS_REPLAY_RUN != '' && env.REPLAY_ITEMS != '[]'
         with:

@@ -20,6 +20,9 @@ on:
       prepared-export-run:
         description: Reuse the partitioned proof and FC comparison from an earlier run
         type: string
+      previous-replay-run:
+        description: Reuse successful replay workers from a run of the same prepared export
+        type: string
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -43,6 +46,9 @@ jobs:
       prepared-run-id: ${{ steps.seed.outputs.prepared-run-id }}
       prepared-groups: ${{ steps.seed.outputs.prepared-groups }}
       prepared-manifest-sha256: ${{ steps.seed.outputs.prepared-manifest-sha256 }}
+      previous-replay-run: ${{ steps.seed.outputs.previous-replay-run }}
+      previous-workers: ${{ steps.seed.outputs.previous-workers }}
+      remaining-chunks: ${{ steps.seed.outputs.remaining-chunks }}
       wave0: ${{ steps.plan.outputs.wave0 }}
       wave1: ${{ steps.plan.outputs.wave1 }}
       wave2: ${{ steps.plan.outputs.wave2 }}
@@ -64,18 +70,24 @@ jobs:
           DISPATCH_FULL_EXPORT: ${{ inputs.full-export }}
           DISPATCH_WITH_NANODA: ${{ inputs.with-nanoda }}
           DISPATCH_PREPARED_RUN: ${{ inputs.prepared-export-run }}
+          DISPATCH_REPLAY_RUN: ${{ inputs.previous-replay-run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           seed_list="$DISPATCH_SEED"
           verify_only="$DISPATCH_VERIFY_ONLY"
           full_export="$DISPATCH_FULL_EXPORT"
           prepared_run="$DISPATCH_PREPARED_RUN"
+          replay_run="$DISPATCH_REPLAY_RUN"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
             seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
             verify_only=$(printf '%s\n' "$trailers" | sed -n 's/^Verify-Only: //p')
             full_export=$(printf '%s\n' "$trailers" | sed -n 's/^Full-Export: //p')
             prepared_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Export-Run: //p')
+            replay_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Replay-Run: //p')
+          fi
+          if [[ -n "$replay_run" ]]; then
+            [[ -n "$prepared_run" && "$replay_run" =~ ^[1-9][0-9]*$ ]]
           fi
           if [[ -n "$prepared_run" ]]; then
             [[ "$prepared_run" =~ ^[1-9][0-9]*$ ]]
@@ -102,6 +114,20 @@ jobs:
               printf 'prepared-groups=%s\n' "$(jq -c '.groups | keys' "$manifest")"
               printf 'prepared-manifest-sha256=%s\n' "$(sha256sum "$manifest" | cut -d ' ' -f 1)"
             } >> "$GITHUB_OUTPUT"
+            if [[ -n "$replay_run" ]]; then
+              replay_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$replay_run" --jq '
+                select(.head_branch == "ci/fc-782-unconditional"
+                       and .path == ".github/workflows/comparator-parallel.yml"
+                       and (.event == "push" or .event == "workflow_dispatch"))
+                | .head_sha')
+              [[ "$replay_commit" =~ ^[0-9a-f]{40}$ ]]
+              git fetch --depth=1 origin "$replay_commit"
+              git diff --exit-code "$replay_commit" HEAD -- lean verification
+              jobs="$RUNNER_TEMP/previous-replay-jobs.json"
+              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$replay_run/jobs?per_page=100" > "$jobs"
+              echo "previous-replay-run=$replay_run" >> "$GITHUB_OUTPUT"
+              python3 .github/scripts/recover-export-replay.py plan "$manifest" "$jobs" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           if [[ "$full_export" != 'true' && "$DISPATCH_WITH_NANODA" != 'true' ]]; then
@@ -378,16 +404,17 @@ jobs:
 
   replay-chunks:
     needs: [prepare, verify]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && (needs.verify.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && needs.prepare.outputs.remaining-chunks != '[]' && (needs.verify.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(needs.prepare.outputs.prepared-groups || needs.verify.outputs.export-groups) }}
+        group: ${{ fromJSON(needs.prepare.outputs.remaining-chunks || needs.prepare.outputs.prepared-groups || needs.verify.outputs.export-groups) }}
     env:
       GROUP: ${{ matrix.group }}
       MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
+      PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
       LEAN_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v7
@@ -407,8 +434,12 @@ jobs:
           fi
           available=$(df -Pm / | awk 'NR == 2 {print $4}')
           swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
-          if (( available >= 40 * 1024 && swap < 12 * 1024**2 )); then
-            sudo fallocate -l 16G /var/tmp/lean-export.swap
+          extra=$(( (available - 16 * 1024) / 1024 ))
+          if (( extra > 28 )); then
+            extra=28
+          fi
+          if (( extra >= 8 && swap < 12 * 1024**2 )); then
+            sudo fallocate -l "${extra}G" /var/tmp/lean-export.swap
             sudo chmod 600 /var/tmp/lean-export.swap
             sudo mkswap /var/tmp/lean-export.swap
             sudo swapon /var/tmp/lean-export.swap
@@ -429,15 +460,24 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/export-replay-chunks.tar.zst" -C "$RUNNER_TEMP"
           mkdir -p "$RUNNER_TEMP/export-replay-receipt"
-          python3 verification/export-replay/receipts.py replay \
-             ./verification/export-replay/.lake/build/bin/export-replay \
-             "$RUNNER_TEMP/export-replay-chunks" "$MANIFEST_SHA256" "$GROUP" \
-             "$RUNNER_TEMP/export-replay-receipt/receipt.json" |
-            tee "$RUNNER_TEMP/export-replay-receipt/replay.log"
+          directory="$RUNNER_TEMP/export-replay-chunks"
+          receipt="$RUNNER_TEMP/export-replay-receipt"
+          binary=./verification/export-replay/.lake/build/bin/export-replay
+          if [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
+            checker=(python3 .github/scripts/recover-export-replay.py check)
+          else
+            checker=(python3 verification/export-replay/receipts.py replay)
+          fi
+          # Keep enough physical memory for the Actions runner and its log uploader.
+          sudo systemd-run --quiet --scope -p MemoryHigh=11G -p MemoryMax=12G \
+             -p MemorySwapMax=27G runuser -u "$(id -un)" -- \
+             env LEAN_NUM_THREADS=1 /usr/bin/time -v nice -n 10 "${checker[@]}" \
+             "$binary" "$directory" "$MANIFEST_SHA256" "$GROUP" "$receipt/receipt.json" 2>&1 |
+            tee "$receipt/replay.log"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: export-replay-worker-${{ matrix.group }}
+          name: ${{ needs.prepare.outputs.previous-replay-run != '' && 'export-replay-chunk' || 'export-replay-worker' }}-${{ matrix.group }}
           path: ${{ runner.temp }}/export-replay-receipt/
           overwrite: true
           retention-days: 90
@@ -445,11 +485,14 @@ jobs:
 
   certify-full-export:
     needs: [prepare, verify, replay-chunks]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs['replay-chunks'].result == 'success' && needs.prepare.outputs.split-export == 'true' }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && (needs['replay-chunks'].result == 'success' || (needs.prepare.outputs.previous-replay-run != '' && needs.prepare.outputs.remaining-chunks == '[]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
+      PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
+      PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
+      REMAINING_CHUNKS: ${{ needs.prepare.outputs.remaining-chunks }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -461,14 +504,32 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.prepared-run-id || github.run_id }}
       - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_REPLAY_RUN == ''
         with:
           pattern: export-replay-worker-*
           path: ${{ runner.temp }}/export-replay-result/workers
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_REPLAY_RUN != '' && env.PREVIOUS_WORKERS != '[]'
+        with:
+          pattern: export-replay-worker-*
+          path: ${{ runner.temp }}/export-replay-result/previous
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_REPLAY_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_REPLAY_RUN != '' && env.REMAINING_CHUNKS != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/recovered
       - name: Confirm that Lean checked the entire proof export
         run: |
           directory="$RUNNER_TEMP/export-replay-result"
-          python3 verification/export-replay/receipts.py finish "$directory/manifest.json" \
-             "$MANIFEST_SHA256" "$directory/workers" "$directory/result.json"
+          if [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
+            python3 .github/scripts/recover-export-replay.py combine "$directory" \
+               "$MANIFEST_SHA256" "$PREVIOUS_WORKERS" "$REMAINING_CHUNKS"
+          else
+            python3 verification/export-replay/receipts.py finish "$directory/manifest.json" \
+               "$MANIFEST_SHA256" "$directory/workers" "$directory/result.json"
+          fi
           cat "$directory/result.json"
       - uses: actions/upload-artifact@v7
         with:

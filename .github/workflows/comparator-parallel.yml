@@ -36,7 +36,7 @@ on:
         description: Assemble a certificate when an earlier run checked every outstanding range
         type: string
   push:
-    branches: [ci/fc-782-unconditional]
+    branches: [main, ci/fc-782-unconditional]
 
 permissions:
   contents: read

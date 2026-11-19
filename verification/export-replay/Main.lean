@@ -139,6 +139,9 @@ private def opaqueView (ci : ConstantInfo) : ConstantInfo :=
   | .defnInfo value => .opaqueInfo {
       name := value.name, levelParams := value.levelParams, type := value.type
       value := value.value, isUnsafe := value.safety != .safe, all := value.all }
+  | .thmInfo value => .opaqueInfo {
+      name := value.name, levelParams := value.levelParams, type := value.type
+      value := value.value, isUnsafe := false, all := value.all }
   | _ => ci
 
 private def projectionUses (ci : ConstantInfo) : Array Name :=
@@ -182,6 +185,8 @@ private def projectedImports (prior : ProofPrefix) (target : Array ConstantInfo)
           | .regular _ => .defnInfo { defn with hints := .abbrev }
           | _ => ci
         else if base.contains name || transparent index name then ci else opaqueView ci
+      | .thmInfo _ =>
+        if preferUnfold.isEmpty then ci else opaqueView ci
       | _ => ci
     if projected.isDefinition then unfolded := unfolded.push index
     imports := imports.push projected

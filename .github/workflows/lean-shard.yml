@@ -1,0 +1,57 @@
+name: Compile a Lean dependency shard
+on:
+  workflow_call:
+    inputs:
+      wave:
+        type: number
+        required: true
+      shard:
+        type: number
+        required: true
+      seed-run-ids:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      LEAN_NUM_THREADS: "1"
+      BUILD_WAVE: ${{ inputs.wave }}
+      BUILD_SHARD: ${{ inputs.shard }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/lean-dependencies
+        with:
+          seed-run-ids: ${{ inputs.seed-run-ids }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: fc782-build-plan
+          path: ${{ runner.temp }}/lean-plan
+      - uses: actions/download-artifact@v8
+        if: inputs.wave > 0
+        with:
+          pattern: fc782-wave-*
+          path: ${{ runner.temp }}/lean-deltas
+      - name: Restore compiled dependencies from earlier waves
+        if: inputs.wave > 0
+        run: bash verification/restore-shards.sh "$BUILD_WAVE" "$RUNNER_TEMP/lean-deltas"
+      - name: Compile and pack the assigned dependency modules
+        run: |
+          python3 verification/dependency_shards.py build "$RUNNER_TEMP/lean-plan/plan.json" \
+            "$BUILD_WAVE" "$BUILD_SHARD" "$RUNNER_TEMP/lean-output"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fc782-wave-${{ inputs.wave }}-shard-${{ inputs.shard }}
+          path: ${{ runner.temp }}/lean-output/*.tar.zst
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+          retention-days: 2

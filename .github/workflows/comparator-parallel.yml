@@ -1,0 +1,644 @@
+name: Parallel Lean comparator
+on:
+  workflow_dispatch:
+    inputs:
+      seed-run-ids:
+        description: Space-delimited IDs for completed runs whose compiled dependencies should be reused
+        type: string
+      verify-only:
+        description: Verify the full proof using completed dependency artifacts
+        type: boolean
+        default: false
+      with-nanoda:
+        description: Also run the independent nanoda kernel
+        type: boolean
+        default: false
+      full-export:
+        description: Check the full proof export with parallel Lean kernel replays
+        type: boolean
+        default: false
+      prepared-export-run:
+        description: Reuse the partitioned proof and FC comparison from an earlier run
+        type: string
+      previous-replay-run:
+        description: Reuse successful replay workers from a run of the same prepared export
+        type: string
+      previous-chunk-run:
+        description: Reuse successful individual chunks and subdivide the remaining chunks
+        type: string
+      previous-slice-run:
+        description: Reuse successful slices and subdivide the remaining slices
+        type: string
+      previous-nested-run:
+        description: Reuse successful nested ranges from a previous replay
+        type: string
+      completed-replay-run:
+        description: Assemble a certificate when an earlier run checked every outstanding range
+        type: string
+  push:
+    branches: [main, ci/fc-782-unconditional]
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      seed-run-ids: ${{ steps.seed.outputs.run-ids }}
+      verify-only: ${{ steps.seed.outputs.verify-only }}
+      check-compiled-declaration: ${{ steps.seed.outputs.check-compiled-declaration }}
+      split-export: ${{ steps.seed.outputs.split-export }}
+      prepared-run-id: ${{ steps.seed.outputs.prepared-run-id }}
+      prepared-groups: ${{ steps.seed.outputs.prepared-groups }}
+      prepared-manifest-sha256: ${{ steps.seed.outputs.prepared-manifest-sha256 }}
+      previous-replay-run: ${{ steps.seed.outputs.previous-replay-run }}
+      previous-chunk-run: ${{ steps.seed.outputs.previous-chunk-run }}
+      previous-slice-run: ${{ steps.seed.outputs.previous-slice-run }}
+      previous-nested-run: ${{ steps.seed.outputs.previous-nested-run }}
+      completed-replay-run: ${{ steps.seed.outputs.completed-replay-run }}
+      previous-workers: ${{ steps.seed.outputs.previous-workers }}
+      previous-chunks: ${{ steps.seed.outputs.previous-chunks }}
+      previous-slices: ${{ steps.seed.outputs.previous-slices }}
+      previous-nested: ${{ steps.seed.outputs.previous-nested }}
+      replay-items: ${{ steps.seed.outputs.replay-items }}
+      recovered-items: ${{ steps.seed.outputs.recovered-items }}
+      replay-plan: ${{ steps.seed.outputs.replay-plan }}
+      wave0: ${{ steps.plan.outputs.wave0 }}
+      wave1: ${{ steps.plan.outputs.wave1 }}
+      wave2: ${{ steps.plan.outputs.wave2 }}
+      wave3: ${{ steps.plan.outputs.wave3 }}
+      wave4: ${{ steps.plan.outputs.wave4 }}
+      wave5: ${{ steps.plan.outputs.wave5 }}
+      wave6: ${{ steps.plan.outputs.wave6 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check both targets against the pinned FC source
+        run: python3 verification/prepare_sources.py --check
+      - name: Identify the earlier dependency builds
+        id: seed
+        env:
+          DISPATCH_SEED: ${{ inputs.seed-run-ids }}
+          DISPATCH_VERIFY_ONLY: ${{ inputs.verify-only }}
+          DISPATCH_FULL_EXPORT: ${{ inputs.full-export }}
+          DISPATCH_WITH_NANODA: ${{ inputs.with-nanoda }}
+          DISPATCH_PREPARED_RUN: ${{ inputs.prepared-export-run }}
+          DISPATCH_REPLAY_RUN: ${{ inputs.previous-replay-run }}
+          DISPATCH_CHUNK_RUN: ${{ inputs.previous-chunk-run }}
+          DISPATCH_SLICE_RUN: ${{ inputs.previous-slice-run }}
+          DISPATCH_NESTED_RUN: ${{ inputs.previous-nested-run }}
+          DISPATCH_COMPLETED_RUN: ${{ inputs.completed-replay-run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          seed_list="$DISPATCH_SEED"
+          verify_only="$DISPATCH_VERIFY_ONLY"
+          full_export="$DISPATCH_FULL_EXPORT"
+          prepared_run="$DISPATCH_PREPARED_RUN"
+          replay_run="$DISPATCH_REPLAY_RUN"
+          chunk_run="$DISPATCH_CHUNK_RUN"
+          slice_run="$DISPATCH_SLICE_RUN"
+          nested_run="$DISPATCH_NESTED_RUN"
+          completed_run="$DISPATCH_COMPLETED_RUN"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
+            seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
+            verify_only=$(printf '%s\n' "$trailers" | sed -n 's/^Verify-Only: //p')
+            full_export=$(printf '%s\n' "$trailers" | sed -n 's/^Full-Export: //p')
+            prepared_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Export-Run: //p')
+            replay_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Replay-Run: //p')
+            chunk_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Chunk-Run: //p')
+            slice_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Slice-Run: //p')
+            nested_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Nested-Run: //p')
+            completed_run=$(printf '%s\n' "$trailers" | sed -n 's/^Assemble-Replay-Run: //p')
+          fi
+          if [[ -n "$completed_run" ]]; then
+            [[ -n "$nested_run" && "$completed_run" =~ ^[1-9][0-9]*$ ]]
+          fi
+          if [[ -n "$nested_run" ]]; then
+            [[ -n "$slice_run" && "$nested_run" =~ ^[1-9][0-9]*$ ]]
+          fi
+          if [[ -n "$slice_run" ]]; then
+            [[ -n "$chunk_run" && "$slice_run" =~ ^[1-9][0-9]*$ ]]
+          fi
+          if [[ -n "$chunk_run" ]]; then
+            [[ -n "$replay_run" && "$chunk_run" =~ ^[1-9][0-9]*$ ]]
+          fi
+          if [[ -n "$replay_run" ]]; then
+            [[ -n "$prepared_run" && "$replay_run" =~ ^[1-9][0-9]*$ ]]
+          fi
+          if [[ -n "$prepared_run" ]]; then
+            [[ "$prepared_run" =~ ^[1-9][0-9]*$ ]]
+            prepared_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$prepared_run" --jq '
+              select(.status == "completed"
+                     and .head_branch == "ci/fc-782-unconditional"
+                     and .path == ".github/workflows/comparator-parallel.yml"
+                     and (.event == "push" or .event == "workflow_dispatch"))
+              | .head_sha')
+            [[ "$prepared_commit" =~ ^[0-9a-f]{40}$ ]]
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$prepared_run/jobs?per_page=100" --jq '
+              .jobs[] | select(.name == "verify" and .conclusion == "success") |
+              .steps[] | select(.name == "Partition the proof export and compare its FC statement") |
+              .conclusion' | grep -Fxq 'success'
+            git fetch --depth=1 origin "$prepared_commit"
+            invariant_sources=(lean verification ':(exclude)verification/export-replay/Main.lean'
+              ':(exclude)verification/export-replay/projections')
+            git diff --exit-code "$prepared_commit" HEAD -- "${invariant_sources[@]}"
+            directory="$RUNNER_TEMP/prepared-export"
+            gh run download "$prepared_run" --repo "$GITHUB_REPOSITORY" --name export-replay-manifest --dir "$directory"
+            manifest="$directory/manifest.json"
+            {
+              echo 'verify-only=true'
+              echo 'split-export=true'
+              echo "prepared-run-id=$prepared_run"
+              printf 'prepared-groups=%s\n' "$(jq -c '.groups | keys' "$manifest")"
+              printf 'prepared-manifest-sha256=%s\n' "$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+            } >> "$GITHUB_OUTPUT"
+            if [[ -n "$replay_run" ]]; then
+              replay_runs=("$replay_run")
+              if [[ -n "$chunk_run" ]]; then
+                replay_runs+=("$chunk_run")
+                echo "previous-chunk-run=$chunk_run" >> "$GITHUB_OUTPUT"
+              fi
+              if [[ -n "$slice_run" ]]; then
+                replay_runs+=("$slice_run")
+                echo "previous-slice-run=$slice_run" >> "$GITHUB_OUTPUT"
+              fi
+              if [[ -n "$nested_run" ]]; then
+                replay_runs+=("$nested_run")
+                echo "previous-nested-run=$nested_run" >> "$GITHUB_OUTPUT"
+              fi
+              if [[ -n "$completed_run" ]]; then
+                replay_runs+=("$completed_run")
+                echo "completed-replay-run=$completed_run" >> "$GITHUB_OUTPUT"
+              fi
+              job_files=()
+              for previous_run in "${replay_runs[@]}"; do
+                previous_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$previous_run" --jq '
+                  select(.head_branch == "ci/fc-782-unconditional"
+                         and .path == ".github/workflows/comparator-parallel.yml"
+                         and (.event == "push" or .event == "workflow_dispatch"))
+                  | .head_sha')
+                [[ "$previous_commit" =~ ^[0-9a-f]{40}$ ]]
+                git fetch --depth=1 origin "$previous_commit"
+                git diff --exit-code "$previous_commit" HEAD -- "${invariant_sources[@]}"
+                jobs="$RUNNER_TEMP/previous-replay-$previous_run.json"
+                gh api "repos/$GITHUB_REPOSITORY/actions/runs/$previous_run/jobs?per_page=100" > "$jobs"
+                job_files+=("$jobs")
+              done
+              echo "previous-replay-run=$replay_run" >> "$GITHUB_OUTPUT"
+              python3 .github/scripts/recover-export-replay.py plan "$manifest" "${job_files[@]}" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          if [[ "$full_export" != 'true' && "$DISPATCH_WITH_NANODA" != 'true' ]]; then
+            echo 'check-compiled-declaration=true' >> "$GITHUB_OUTPUT"
+          elif [[ "$DISPATCH_WITH_NANODA" != 'true' ]]; then
+            echo 'split-export=true' >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$verify_only" == 'true' ]]; then
+            [[ -n "$seed_list" ]]
+            echo 'verify-only=true' >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -z "$seed_list" ]]; then
+            exit 0
+          fi
+          if [[ ! "$seed_list" =~ ^[1-9][0-9]*([[:blank:]]+[1-9][0-9]*)*$ ]]; then
+            echo "Expected numeric GitHub Actions run IDs." >&2
+            exit 1
+          fi
+          read -r -a seed_runs <<< "$seed_list"
+          for seed_run in "${seed_runs[@]}"; do
+            seed_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$seed_run" --jq '
+              select(.status == "completed"
+                     and .head_branch == "ci/fc-782-unconditional"
+                     and .path == ".github/workflows/comparator-parallel.yml"
+                     and (.event == "push" or .event == "workflow_dispatch"))
+              | .head_sha')
+            if [[ ! "$seed_commit" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "The seed must be a completed run of this workflow on the CI branch." >&2
+              exit 1
+            fi
+            git fetch --depth=1 origin "$seed_commit"
+            git diff --exit-code "$seed_commit" HEAD -- lean/lean-toolchain lean/lake-manifest.json \
+              verification/axiom-cache.json verification/dependency_shards.py
+          done
+          echo "run-ids=${seed_runs[*]}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/lean-dependencies
+        id: deps
+        if: steps.seed.outputs.verify-only != 'true'
+        with:
+          seed-run-ids: ${{ steps.seed.outputs.run-ids }}
+      - name: Save the public cache for the compiler jobs
+        if: steps.seed.outputs.verify-only != 'true' && steps.seed.outputs.run-ids == '' && steps.deps.outputs.public-cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            lean/.lake/packages/Stacks/.lake/build
+            lean/.lake/packages/Mordell/.lake/build
+          key: ${{ steps.deps.outputs.public-cache-key }}
+      - name: Plan the dependency builds
+        id: plan
+        if: steps.seed.outputs.verify-only != 'true'
+        run: python3 verification/dependency_shards.py plan "$RUNNER_TEMP/plan.json" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        if: steps.seed.outputs.verify-only != 'true'
+        with:
+          name: fc782-build-plan
+          path: ${{ runner.temp }}/plan.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 2
+
+  wave0:
+    if: needs.prepare.outputs.verify-only != 'true'
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave0) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 0
+      shard: ${{ matrix.shard }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+
+  wave1:
+    if: needs.prepare.outputs.verify-only != 'true'
+    needs: [prepare, wave0]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave1) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 1
+      shard: ${{ matrix.shard }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+
+  wave2:
+    if: needs.prepare.outputs.verify-only != 'true'
+    needs: [prepare, wave1]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave2) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 2
+      shard: ${{ matrix.shard }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+
+  wave3:
+    if: needs.prepare.outputs.verify-only != 'true'
+    needs: [prepare, wave2]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave3) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 3
+      shard: ${{ matrix.shard }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+
+  wave4:
+    if: needs.prepare.outputs.verify-only != 'true'
+    needs: [prepare, wave3]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave4) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 4
+      shard: ${{ matrix.shard }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+
+  wave5:
+    if: needs.prepare.outputs.verify-only != 'true'
+    needs: [prepare, wave4]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave5) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 5
+      shard: ${{ matrix.shard }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+
+  wave6:
+    if: needs.prepare.outputs.verify-only != 'true'
+    needs: [prepare, wave5]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.wave6) }}
+    uses: ./.github/workflows/lean-shard.yml
+    with:
+      wave: 6
+      shard: ${{ matrix.shard }}
+      seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+
+  verify:
+    needs: [prepare, wave6]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.prepared-run-id == '' && (needs.wave6.result == 'success' || needs.prepare.outputs.verify-only == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      export-groups: ${{ steps.partition.outputs.groups }}
+      manifest-sha256: ${{ steps.partition.outputs.manifest-sha256 }}
+    env:
+      LEAN_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check both targets against the pinned FC source
+        run: python3 verification/prepare_sources.py --check
+      - uses: ./.github/actions/lean-dependencies
+        with:
+          seed-run-ids: ${{ needs.prepare.outputs.seed-run-ids }}
+          swap-gib: '32'
+      - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.verify-only != 'true'
+        with:
+          pattern: fc782-wave-*
+          path: ${{ runner.temp }}/lean-deltas
+      - name: Restore compiled dependencies
+        if: needs.prepare.outputs.verify-only != 'true'
+        run: bash verification/restore-shards.sh 7 "$RUNNER_TEMP/lean-deltas"
+      - name: Set up the comparator sandbox
+        if: needs.prepare.outputs.check-compiled-declaration != 'true' && needs.prepare.outputs.split-export != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apparmor bubblewrap zstd
+          sandbox=$(command -v bwrap)
+          probe=(--ro-bind / / --dev /dev --proc /proc --unshare-all -- /usr/bin/true)
+          if ! "$sandbox" "${probe[@]}"; then
+            sudo install -m 0755 "$sandbox" /usr/local/bin/erdos782-bwrap
+            sandbox=/usr/local/bin/erdos782-bwrap
+            sudo apparmor_parser -r <<'APPARMOR'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile erdos782-bwrap /usr/local/bin/erdos782-bwrap flags=(unconfined) {
+            userns,
+          }
+          APPARMOR
+            "$sandbox" "${probe[@]}"
+          fi
+          echo "COMPARATOR_BWRAP=$sandbox" >> "$GITHUB_ENV"
+      - name: Build and audit the exact candidate
+        run: |
+          mkdir -p verification/results
+          (cd lean && lake build +Comparator.Candidate) 2>&1 | tee verification/results/source-build.log
+          (cd lean && lake env lean ../verification/Check.lean) | tee verification/results/source-statement.log
+      - name: Replay the compiled Lean declaration
+        if: needs.prepare.outputs.check-compiled-declaration == 'true'
+        run: |
+          (cd lean && lake env leanchecker --verbose Comparator.Candidate) 2>&1 | tee verification/results/compiled-declaration-replay.log
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            verification/results/source-build.log
+            verification/results/source-statement.log
+            verification/results/compiled-declaration-replay.log
+          retention-days: 90
+          if-no-files-found: error
+      - name: Export the proof
+        if: needs.prepare.outputs.check-compiled-declaration != 'true'
+        run: |
+          free -h
+          df -h /
+          nice -n 10 ionice -c 2 -n 6 bash verification/export-solution.sh --raw "$RUNNER_TEMP/erdos782-proof.ndjson"
+          sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson" | cut -d ' ' -f 1 > verification/results/solution.sha256
+      - name: Partition the proof export and compare its FC statement
+        id: partition
+        if: needs.prepare.outputs.split-export == 'true'
+        run: |
+          (cd lean && lake build +Comparator.Challenge)
+          bash verification/export-solution.sh --challenge --raw "$RUNNER_TEMP/fc-challenge.ndjson"
+          (cd verification/export-replay && python3 generate-parser.py && lake build)
+          python3 verification/export-replay/receipts.py prepare \
+             ./verification/export-replay/.lake/build/bin/export-replay \
+             "$RUNNER_TEMP/erdos782-proof.ndjson" "$RUNNER_TEMP/fc-challenge.ndjson" \
+             "$RUNNER_TEMP/export-replay-chunks" 3000000
+          tar -C "$RUNNER_TEMP" -cf - export-replay-chunks |
+            zstd -T2 -3 -o "$RUNNER_TEMP/export-replay-chunks.tar.zst"
+          cat "$RUNNER_TEMP/actions-outputs.txt" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        if: needs.prepare.outputs.split-export == 'true'
+        with:
+          name: export-replay-chunks
+          path: ${{ runner.temp }}/export-replay-chunks.tar.zst
+          overwrite: true
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: needs.prepare.outputs.split-export == 'true'
+        with:
+          name: export-replay-manifest
+          path: ${{ runner.temp }}/export-replay-chunks/manifest.json
+          overwrite: true
+          retention-days: 90
+          if-no-files-found: error
+      - name: Compare the proof against the pinned FC statement
+        if: needs.prepare.outputs.check-compiled-declaration != 'true' && needs.prepare.outputs.split-export != 'true'
+        env:
+          WITH_NANODA: ${{ inputs.with-nanoda }}
+        run: |
+          options=(--solution-export "$RUNNER_TEMP/erdos782-proof.ndjson")
+          if [[ "$WITH_NANODA" != 'true' ]]; then
+            options+=(--lean-only)
+          fi
+          nice -n 10 ionice -c 2 -n 6 python3 verification/verify.py "${options[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always() && needs.prepare.outputs.check-compiled-declaration != 'true' && needs.prepare.outputs.split-export != 'true'
+        with:
+          name: comparator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verification/results/
+          retention-days: 90
+          if-no-files-found: ignore
+
+  replay-chunks:
+    needs: [prepare, verify]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && needs.prepare.outputs.replay-items != '[]' && (needs.verify.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.prepare.outputs.replay-items || needs.prepare.outputs.prepared-groups || needs.verify.outputs.export-groups) }}
+    env:
+      GROUP: ${{ matrix.group }}
+      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
+      PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
+      LEAN_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned Lean toolchain
+        run: |
+          installer="$RUNNER_TEMP/erdos782-elan-init.sh"
+          curl --proto '=https' --tlsv1.2 -fsSL https://elan.lean-lang.org/elan-init.sh -o "$installer"
+          sh "$installer" -y --default-toolchain none --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Prepare the replay runner
+        run: |
+          if ! command -v zstd >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
+          available=$(df -Pm / | awk 'NR == 2 {print $4}')
+          swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
+          extra=$(( (available - 16 * 1024) / 1024 ))
+          if (( extra > 28 )); then
+            extra=28
+          fi
+          if (( extra >= 8 && swap < 12 * 1024**2 )); then
+            sudo fallocate -l "${extra}G" /var/tmp/lean-export.swap
+            sudo chmod 600 /var/tmp/lean-export.swap
+            sudo mkswap /var/tmp/lean-export.swap
+            sudo swapon /var/tmp/lean-export.swap
+          fi
+          free -h
+      - name: Build the proof replay tool
+        working-directory: verification/export-replay
+        run: |
+          python3 generate-parser.py
+          lake build
+      - uses: actions/download-artifact@v8
+        with:
+          name: export-replay-chunks
+          path: ${{ runner.temp }}
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.prepared-run-id || github.run_id }}
+      - name: Replay assigned declarations in the Lean kernel
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/export-replay-chunks.tar.zst" -C "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/export-replay-receipt"
+          directory="$RUNNER_TEMP/export-replay-chunks"
+          receipt="$RUNNER_TEMP/export-replay-receipt"
+          binary=./verification/export-replay/.lake/build/bin/export-replay
+          if [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
+            checker=(python3 .github/scripts/recover-export-replay.py check)
+          else
+            checker=(python3 verification/export-replay/receipts.py replay)
+          fi
+          # Keep enough physical memory for the Actions runner and its log uploader.
+          sudo systemd-run --quiet --scope -p MemoryHigh=11G -p MemoryMax=12G \
+             -p MemorySwapMax=27G runuser -u "$(id -un)" -- \
+             env LEAN_NUM_THREADS=1 /usr/bin/time -v nice -n 10 "${checker[@]}" \
+             "$binary" "$directory" "$MANIFEST_SHA256" "$GROUP" "$receipt/receipt.json" 2>&1 |
+            tee "$receipt/replay.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{ needs.prepare.outputs.previous-replay-run != '' && 'export-replay-chunk' || 'export-replay-worker' }}-${{ matrix.group }}
+          path: ${{ runner.temp }}/export-replay-receipt/
+          overwrite: true
+          retention-days: 90
+          if-no-files-found: ignore
+
+  certify-full-export:
+    needs: [prepare, verify, replay-chunks]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && (needs['replay-chunks'].result == 'success' || (needs.prepare.outputs.previous-replay-run != '' && needs.prepare.outputs.replay-items == '[]')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
+      PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
+      PREVIOUS_CHUNK_RUN: ${{ needs.prepare.outputs.previous-chunk-run }}
+      PREVIOUS_SLICE_RUN: ${{ needs.prepare.outputs.previous-slice-run }}
+      PREVIOUS_NESTED_RUN: ${{ needs.prepare.outputs.previous-nested-run }}
+      COMPLETED_REPLAY_RUN: ${{ needs.prepare.outputs.completed-replay-run }}
+      PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
+      PREVIOUS_CHUNKS: ${{ needs.prepare.outputs.previous-chunks }}
+      PREVIOUS_SLICES: ${{ needs.prepare.outputs.previous-slices }}
+      PREVIOUS_NESTED: ${{ needs.prepare.outputs.previous-nested }}
+      RECOVERED_ITEMS: ${{ needs.prepare.outputs.recovered-items }}
+      REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: export-replay-manifest
+          path: ${{ runner.temp }}/export-replay-result
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.prepared-run-id || github.run_id }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_REPLAY_RUN == ''
+        with:
+          pattern: export-replay-worker-*
+          path: ${{ runner.temp }}/export-replay-result/workers
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_REPLAY_RUN != '' && env.PREVIOUS_WORKERS != '[]'
+        with:
+          pattern: export-replay-worker-*
+          path: ${{ runner.temp }}/export-replay-result/previous
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_REPLAY_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_CHUNK_RUN != '' && env.PREVIOUS_CHUNKS != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/continued
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_CHUNK_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_SLICE_RUN != '' && env.PREVIOUS_SLICES != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/slices
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_SLICE_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_NESTED_RUN != '' && env.PREVIOUS_NESTED != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/nested
+          github-token: ${{ github.token }}
+          run-id: ${{ env.PREVIOUS_NESTED_RUN }}
+      - uses: actions/download-artifact@v8
+        if: env.PREVIOUS_REPLAY_RUN != '' && env.RECOVERED_ITEMS != '[]'
+        with:
+          pattern: export-replay-chunk-*
+          path: ${{ runner.temp }}/export-replay-result/recovered
+          github-token: ${{ github.token }}
+          run-id: ${{ env.COMPLETED_REPLAY_RUN || github.run_id }}
+      - name: Confirm that Lean checked the entire proof export
+        run: |
+          directory="$RUNNER_TEMP/export-replay-result"
+          if [[ -n "$PREVIOUS_REPLAY_RUN" ]]; then
+            python3 .github/scripts/recover-export-replay.py combine "$directory" \
+               "$MANIFEST_SHA256" "$REPLAY_PLAN"
+          else
+            if [[ -f "$directory/workers/receipt.json" ]]; then
+              worker="$directory/workers/export-replay-worker-0"
+              mkdir "$worker"
+              mv "$directory/workers/receipt.json" "$worker/"
+              mv "$directory/workers/replay.log" "$worker/"
+            fi
+            python3 verification/export-replay/receipts.py finish "$directory/manifest.json" \
+               "$MANIFEST_SHA256" "$directory/workers" "$directory/result.json"
+          fi
+          cat "$directory/result.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: full-export-certificate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/export-replay-result
+          retention-days: 90
+          if-no-files-found: error

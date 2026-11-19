@@ -1,0 +1,9 @@
+name = "export_replay"
+defaultTargets = ["export-replay"]
+
+[[lean_lib]]
+name = "ExportReplayParser"
+
+[[lean_exe]]
+name = "export-replay"
+root = "Main"

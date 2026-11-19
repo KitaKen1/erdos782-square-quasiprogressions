@@ -49,11 +49,11 @@ def main():
 
     for name in ("Challenge.lean", "Candidate.lean"):
         targets = re.findall(
-            r"^theorem erdos_782\.parts\.i_neg\b.+?\n    ¬ \((.+?)\) :=",
+            r"^theorem erdos_782\.parts\.i_neg :\n    ¬ \((.+?)\) :=",
             (COMPARATOR / name).read_text(encoding="utf-8"), re.M | re.S,
         )
         if len(targets) != 1 or targets[0].split() != statement.split():
-            raise SystemExit(f"{name} must negate the exact FC proposition.")
+            raise SystemExit(f"{name} must negate the exact FC proposition without arguments.")
     print("Both Comparator targets negate the pinned FC proposition verbatim.")
 
 

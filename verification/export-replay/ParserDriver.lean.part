@@ -1,0 +1,82 @@
+def nextLine (line : String) : M Unit := do
+  if (← get).lineNumber == 4294967295 then
+    fail "NDJSON exceeds the line index limit"
+  modify fun s => { s with lineNumber := s.lineNumber + 1 }
+  parseItem line
+  modify fun s =>
+    { s with
+      exprMap := s.finishedExpressions.foldl (fun m n => m.erase n) s.exprMap
+      finishedExpressions := #[] }
+
+def readHeader : M Unit := do
+  let header ← (← get).stream.getLine
+  let expected :=
+    "{\"meta\":{\"exporter\":{\"name\":\"lean4export\",\"version\":\"3.1.0\"},\"format\":{\"version\":\"3.1.0\"},\"lean\":{\"githash\":\"eb6cafb7290e8bd5f2937522d8d804f58f02bafc\",\"version\":\"4.35.0\"}}}"
+  unless header == expected ++ "\n" do
+    fail "Expected a Lean 4.35.0 proof export in NDJSON format 3.1.0"
+
+partial def indexLines : M Unit := do
+  let line ← (← get).stream.getLine
+  unless line.isEmpty do
+    nextLine line
+    indexLines
+
+def flush (directory : System.FilePath) (batch : Nat) : M Unit := do
+  let (names, constants) ← modifyGet fun s =>
+    let constants := s.constOrder.map fun name => s.constMap[name]!
+    ((s.constOrder, constants), { s with constOrder := #[], constMap := {} })
+  let mod := Name.mkSimple s!"ExportReplayChunk{batch}"
+  let imports := if batch == 0 then #[] else
+    #[{ module := Name.mkSimple s!"ExportReplayChunk{batch - 1}" }]
+  let data : ModuleData := {
+    isModule := false
+    imports
+    constNames := names
+    constants
+    extraConstNames := #[]
+    entries := #[]
+  }
+  saveModuleData (directory / (mod.toString ++ ".olean")) mod data
+  IO.println s!"Wrote chunk {batch} with {names.size} declarations"
+
+partial def splitLines (directory : System.FilePath) (maxLines : Nat)
+    (batch : Nat := 0) (lastBatchLine : Nat := 1) : M Nat := do
+  let line ← (← get).stream.getLine
+  if line.isEmpty then
+    if (← get).constOrder.isEmpty then return batch
+    flush directory batch
+    return batch + 1
+  -- Lean's exporter emits an inductive package in one line. Quot's four declarations
+  -- are emitted separately, so finish that package before cutting a chunk.
+  let before := (← get).constOrder.size
+  nextLine line
+  let after := (← get).constOrder.size
+  let lineIndex := (← get).lineNumber.toNat
+  if after > before && lineIndex - lastBatchLine >= maxLines then
+    let name := (← get).constOrder.back!
+    if let some (.quotInfo value) := (← get).constMap[name]? then
+      if value.kind != .ind then
+        return ← splitLines directory maxLines batch lastBatchLine
+    flush directory batch
+    splitLines directory maxLines (batch + 1) lineIndex
+  else
+    splitLines directory maxLines batch lastBatchLine
+
+end Parse
+
+open Lean
+
+public def splitFile (path directory : System.FilePath) (maxLines : Nat) : IO Nat := do
+  let uses ← IO.FS.withFile path .read fun file => do
+    let (_, state) ← StateT.run
+      (Parse.readHeader *> Parse.indexLines)
+      { stream := IO.FS.Stream.ofHandle file, indexing := true }
+    pure state.uses
+  IO.println s!"Indexed {uses.size} expressions"
+  IO.FS.withFile path .read fun file => do
+    let (chunks, _) ← StateT.run
+      (Parse.readHeader *> Parse.splitLines directory maxLines)
+      { stream := IO.FS.Stream.ofHandle file, uses }
+    return chunks
+
+end ExportReplay

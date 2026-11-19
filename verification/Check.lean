@@ -5,7 +5,7 @@ import Comparator.Candidate
 open Erdos782
 
 -- Check the candidate against the proposition extracted directly from FC.
-example : PlanarWalkInput → RationalPointInput → ¬ FCPartIStatement :=
+example : ¬ FCPartIStatement :=
   erdos_782.parts.i_neg
 
 #check @Erdos782.erdos_782.parts.i_neg

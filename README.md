@@ -54,6 +54,8 @@ The [parallel Lean comparator workflow](.github/workflows/comparator-parallel.ym
 
 At commit `d650ac0`, the source build, exact FC target audit, and proof export passed. GitHub shut down the runner during the nanoda check. [GitHub Actions job](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942/job/135181001755) · [Source audit artifact](https://github.com/KitaKen1/erdos782-square-quasiprogressions/actions/runs/44411587942/artifacts/14480831726)
 
+The workflow also supports a compiled-declaration check. It builds the exact source target, checks its axioms, and replays the compiled theorem with the pinned imports. Its transcript is in the source audit artifact.
+
 ### Certification within 90 days
 
 Each workflow attempt uploads an artifact named `comparator-<run-id>-<attempt>` with 90-day retention. A successful attempt contains the checked Lean signature in `statement.log`, the Lean kernel verdict in `fc-target.log`, the checked kernels in `result.json`, and the replay status. A run with nanoda enabled also records its verdict and the standalone Lean replay log.

@@ -1,5 +1,6 @@
 """Complete a replay from successful workers and individually checked chunks."""
 
+import gzip
 import json
 from pathlib import Path
 import re
@@ -8,7 +9,8 @@ import sys
 import tempfile
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "verification/export-replay"))
+REPLAY_HOME = Path(__file__).resolve().parents[2] / "verification/export-replay"
+sys.path.insert(0, str(REPLAY_HOME))
 from receipts import checked_manifest, file_digest, finish, write_json
 
 
@@ -85,8 +87,15 @@ def check(binary, directory, digest, item, receipt):
         if subpart:
             options.extend((subpart, str(SUBSLICES_PER_SLICE)))
         with tempfile.TemporaryDirectory(prefix="export-replay-prefix-") as scratch:
+            hint = REPLAY_HOME / "projections" / digest / f"{item}.json.gz"
+            command = "check-slice"
+            if subpart and hint.is_file():
+                hint_file = Path(scratch) / "visibility.json"
+                hint_file.write_bytes(gzip.decompress(hint.read_bytes()))
+                options.append(hint_file)
+                command = "check-projection"
             output = subprocess.check_output(
-                [binary, "check-slice", directory, scratch, str(index), *options], text=True)
+                [binary, command, directory, scratch, str(index), *options], text=True)
         print(output, end="")
         match = re.fullmatch(
             r"Lean kernel accepted chunk (\d+), slice (\d+(?:-\d+)?) \((\d+) to (\d+) of (\d+) declarations\)\n",

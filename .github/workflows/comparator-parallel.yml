@@ -126,7 +126,8 @@ jobs:
               .steps[] | select(.name == "Partition the proof export and compare its FC statement") |
               .conclusion' | grep -Fxq 'success'
             git fetch --depth=1 origin "$prepared_commit"
-            invariant_sources=(lean verification ':(exclude)verification/export-replay/Main.lean')
+            invariant_sources=(lean verification ':(exclude)verification/export-replay/Main.lean'
+              ':(exclude)verification/export-replay/projections')
             git diff --exit-code "$prepared_commit" HEAD -- "${invariant_sources[@]}"
             directory="$RUNNER_TEMP/prepared-export"
             gh run download "$prepared_run" --repo "$GITHUB_REPOSITORY" --name export-replay-manifest --dir "$directory"

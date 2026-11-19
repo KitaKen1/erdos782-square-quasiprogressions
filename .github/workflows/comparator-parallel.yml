@@ -32,6 +32,9 @@ on:
       previous-nested-run:
         description: Reuse successful nested ranges from a previous replay
         type: string
+      completed-replay-run:
+        description: Assemble a certificate when an earlier run checked every outstanding range
+        type: string
   push:
     branches: [ci/fc-782-unconditional]
 
@@ -59,11 +62,13 @@ jobs:
       previous-chunk-run: ${{ steps.seed.outputs.previous-chunk-run }}
       previous-slice-run: ${{ steps.seed.outputs.previous-slice-run }}
       previous-nested-run: ${{ steps.seed.outputs.previous-nested-run }}
+      completed-replay-run: ${{ steps.seed.outputs.completed-replay-run }}
       previous-workers: ${{ steps.seed.outputs.previous-workers }}
       previous-chunks: ${{ steps.seed.outputs.previous-chunks }}
       previous-slices: ${{ steps.seed.outputs.previous-slices }}
       previous-nested: ${{ steps.seed.outputs.previous-nested }}
       replay-items: ${{ steps.seed.outputs.replay-items }}
+      recovered-items: ${{ steps.seed.outputs.recovered-items }}
       replay-plan: ${{ steps.seed.outputs.replay-plan }}
       wave0: ${{ steps.plan.outputs.wave0 }}
       wave1: ${{ steps.plan.outputs.wave1 }}
@@ -90,6 +95,7 @@ jobs:
           DISPATCH_CHUNK_RUN: ${{ inputs.previous-chunk-run }}
           DISPATCH_SLICE_RUN: ${{ inputs.previous-slice-run }}
           DISPATCH_NESTED_RUN: ${{ inputs.previous-nested-run }}
+          DISPATCH_COMPLETED_RUN: ${{ inputs.completed-replay-run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           seed_list="$DISPATCH_SEED"
@@ -100,6 +106,7 @@ jobs:
           chunk_run="$DISPATCH_CHUNK_RUN"
           slice_run="$DISPATCH_SLICE_RUN"
           nested_run="$DISPATCH_NESTED_RUN"
+          completed_run="$DISPATCH_COMPLETED_RUN"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             trailers=$(git log -1 --format=%B | git interpret-trailers --parse)
             seed_list=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-CI-Run: //p' | paste -sd ' ' -)
@@ -110,6 +117,10 @@ jobs:
             chunk_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Chunk-Run: //p')
             slice_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Slice-Run: //p')
             nested_run=$(printf '%s\n' "$trailers" | sed -n 's/^Resume-Nested-Run: //p')
+            completed_run=$(printf '%s\n' "$trailers" | sed -n 's/^Assemble-Replay-Run: //p')
+          fi
+          if [[ -n "$completed_run" ]]; then
+            [[ -n "$nested_run" && "$completed_run" =~ ^[1-9][0-9]*$ ]]
           fi
           if [[ -n "$nested_run" ]]; then
             [[ -n "$slice_run" && "$nested_run" =~ ^[1-9][0-9]*$ ]]
@@ -163,6 +174,10 @@ jobs:
               if [[ -n "$nested_run" ]]; then
                 replay_runs+=("$nested_run")
                 echo "previous-nested-run=$nested_run" >> "$GITHUB_OUTPUT"
+              fi
+              if [[ -n "$completed_run" ]]; then
+                replay_runs+=("$completed_run")
+                echo "completed-replay-run=$completed_run" >> "$GITHUB_OUTPUT"
               fi
               job_files=()
               for previous_run in "${replay_runs[@]}"; do
@@ -547,11 +562,12 @@ jobs:
       PREVIOUS_CHUNK_RUN: ${{ needs.prepare.outputs.previous-chunk-run }}
       PREVIOUS_SLICE_RUN: ${{ needs.prepare.outputs.previous-slice-run }}
       PREVIOUS_NESTED_RUN: ${{ needs.prepare.outputs.previous-nested-run }}
+      COMPLETED_REPLAY_RUN: ${{ needs.prepare.outputs.completed-replay-run }}
       PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
       PREVIOUS_CHUNKS: ${{ needs.prepare.outputs.previous-chunks }}
       PREVIOUS_SLICES: ${{ needs.prepare.outputs.previous-slices }}
       PREVIOUS_NESTED: ${{ needs.prepare.outputs.previous-nested }}
-      REPLAY_ITEMS: ${{ needs.prepare.outputs.replay-items }}
+      RECOVERED_ITEMS: ${{ needs.prepare.outputs.recovered-items }}
       REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan }}
     steps:
       - uses: actions/checkout@v7
@@ -597,10 +613,12 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ env.PREVIOUS_NESTED_RUN }}
       - uses: actions/download-artifact@v8
-        if: env.PREVIOUS_REPLAY_RUN != '' && env.REPLAY_ITEMS != '[]'
+        if: env.PREVIOUS_REPLAY_RUN != '' && env.RECOVERED_ITEMS != '[]'
         with:
           pattern: export-replay-chunk-*
           path: ${{ runner.temp }}/export-replay-result/recovered
+          github-token: ${{ github.token }}
+          run-id: ${{ env.COMPLETED_REPLAY_RUN || github.run_id }}
       - name: Confirm that Lean checked the entire proof export
         run: |
           directory="$RUNNER_TEMP/export-replay-result"
@@ -608,6 +626,12 @@ jobs:
             python3 .github/scripts/recover-export-replay.py combine "$directory" \
                "$MANIFEST_SHA256" "$REPLAY_PLAN"
           else
+            if [[ -f "$directory/workers/receipt.json" ]]; then
+              worker="$directory/workers/export-replay-worker-0"
+              mkdir "$worker"
+              mv "$directory/workers/receipt.json" "$worker/"
+              mv "$directory/workers/replay.log" "$worker/"
+            fi
             python3 verification/export-replay/receipts.py finish "$directory/manifest.json" \
                "$MANIFEST_SHA256" "$directory/workers" "$directory/result.json"
           fi

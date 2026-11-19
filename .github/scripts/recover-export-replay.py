@@ -37,7 +37,7 @@ def successful_items(jobs_path, limit):
 
 
 def plan(manifest_path, jobs_path, chunk_jobs_path=None, slice_jobs_path=None,
-         nested_jobs_path=None):
+         nested_jobs_path=None, completed_jobs_path=None):
     manifest = json.loads(manifest_path.read_text())
     workers = successful_items(jobs_path, len(manifest["groups"]))
     covered = {index for worker in workers for index in manifest["groups"][worker]}
@@ -66,9 +66,16 @@ def plan(manifest_path, jobs_path, chunk_jobs_path=None, slice_jobs_path=None,
         "previous_slices": previous_slices,
         "subslice_count": subslices,
         "previous_nested": previous_nested,
+        "recovered_items": items,
     }
     print(f"replay-plan={json.dumps(plan_data)}")
-    print(f"replay-items={json.dumps(items)}")
+    if completed_jobs_path:
+        if not {str(item) for item in items} <= set(successful_labels(completed_jobs_path)):
+            raise SystemExit("The completed replay run does not cover the remaining items.")
+        print("replay-items=[]")
+    else:
+        print(f"replay-items={json.dumps(items)}")
+    print(f"recovered-items={json.dumps(items)}")
     print(f"previous-workers={json.dumps(workers)}")
     print(f"previous-chunks={json.dumps(previous_chunks)}")
     print(f"previous-slices={json.dumps(previous_slices)}")
@@ -133,11 +140,34 @@ def slice_receipts(directory, plan, index):
             yield directory / "recovered" / f"export-replay-chunk-{label}", {"slice": part}
 
 
+def normalize_receipt(directory, prefix, items):
+    # download-artifact flattens a pattern that matches just one artifact.
+    receipt = directory / "receipt.json"
+    if not receipt.is_file():
+        return
+    if len(items) != 1:
+        raise SystemExit(f"Unexpected flattened artifact in {directory}")
+    destination = directory / f"{prefix}{items[0]}"
+    destination.mkdir()
+    receipt.rename(destination / receipt.name)
+    log = directory / "replay.log"
+    if log.is_file():
+        log.rename(destination / log.name)
+
+
 def combine(directory, digest, plan):
     manifest_path = directory / "manifest.json"
     if file_digest(manifest_path) != digest:
         raise SystemExit("Final manifest digest mismatch.")
     manifest = json.loads(manifest_path.read_text())
+    for source, prefix, key in [
+        ("previous", "export-replay-worker-", "workers"),
+        ("continued", "export-replay-chunk-", "chunks"),
+        ("slices", "export-replay-chunk-", "previous_slices"),
+        ("nested", "export-replay-chunk-", "previous_nested"),
+        ("recovered", "export-replay-chunk-", "recovered_items"),
+    ]:
+        normalize_receipt(directory / source, prefix, plan.get(key, []))
     workers = directory / "workers"
     covered = {}
     def chunk_info(index):

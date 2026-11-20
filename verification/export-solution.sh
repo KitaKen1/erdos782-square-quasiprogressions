@@ -7,20 +7,29 @@ if [[ "${1:-}" == --challenge ]]; then
   module=Comparator.Challenge
   shift
 fi
+compiled_root=''
+if [[ "${1:-}" == --compiled-root ]]; then
+  compiled_root="$(cd "$2" && pwd)"
+  shift 2
+fi
 raw=false
 if [[ "${1:-}" == --raw ]]; then
   raw=true
   shift
 fi
 if [[ "$#" != 1 ]]; then
-  echo "Usage: $0 [--challenge] [--raw] OUTPUT" >&2
+  echo "Usage: $0 [--challenge] [--compiled-root DIRECTORY] [--raw] OUTPUT" >&2
   exit 2
 fi
 output="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 cd "$(dirname "$0")/../lean"
 
 export_proof() {
-  lake env leanexport "$module" -- \
+  local command=(lake env leanexport)
+  if [[ -n "$compiled_root" ]]; then
+    command=(env "LEAN_PATH=$compiled_root" "$(lean --print-prefix)/bin/leanexport")
+  fi
+  "${command[@]}" "$module" -- \
     Quot Quot.mk Quot.lift Quot.ind Erdos782.erdos_782.parts.i_neg \
     propext Classical.choice Quot.sound \
     Nat.add Nat.sub Nat.mul Nat.pow Nat.gcd Nat.div Nat.mod Nat.beq Nat.ble \

@@ -144,7 +144,7 @@ jobs:
               | .head_sha')
             [[ "$prepared_commit" =~ ^[0-9a-f]{40}$ ]]
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$prepared_run/jobs?per_page=100" --jq '
-              .jobs[] | select(.name == "verify" and .conclusion == "success") |
+              .jobs[] | select((.name == "verify" or .name == "export-proof") and .conclusion == "success") |
               .steps[] | select(.name == "Partition the proof export and compare its FC statement") |
               .conclusion' | grep -Fxq 'success'
             git fetch --depth=1 origin "$prepared_commit"
@@ -353,11 +353,6 @@ jobs:
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.prepared-run-id == '' && (needs.wave6.result == 'success' || needs.prepare.outputs.verify-only == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    outputs:
-      export-groups: ${{ steps.partition.outputs.groups }}
-      manifest-sha256: ${{ steps.partition.outputs.manifest-sha256 }}
-      fresh-export-plan: ${{ steps.partition.outputs.fresh-export-plan }}
-      fresh-export-items: ${{ steps.partition.outputs.fresh-export-items }}
     env:
       LEAN_NUM_THREADS: "1"
     steps:
@@ -416,46 +411,31 @@ jobs:
             verification/results/compiled-declaration-replay.log
           retention-days: 90
           if-no-files-found: error
+      - name: Pack the compiled inputs to the exporter
+        if: needs.prepare.outputs.split-export == 'true'
+        working-directory: lean
+        run: |
+          lake build +Comparator.Challenge
+          lake env lean --run ../.github/scripts/list-export-inputs.lean \
+             Comparator.Candidate Comparator.Challenge > "$RUNNER_TEMP/lean-export-inputs.jsonl"
+          python3 ../.github/scripts/pack-export-inputs.py "$RUNNER_TEMP/lean-export-inputs.jsonl" \
+             "$RUNNER_TEMP/lean-export-inputs.tar.zst"
+      - uses: actions/upload-artifact@v7
+        if: needs.prepare.outputs.split-export == 'true'
+        with:
+          name: lean-export-inputs
+          path: ${{ runner.temp }}/lean-export-inputs.tar.zst
+          overwrite: true
+          retention-days: 2
+          compression-level: 0
+          if-no-files-found: error
       - name: Export the proof
-        if: needs.prepare.outputs.check-compiled-declaration != 'true'
+        if: needs.prepare.outputs.check-compiled-declaration != 'true' && needs.prepare.outputs.split-export != 'true'
         run: |
           free -h
           df -h /
           nice -n 10 ionice -c 2 -n 6 bash verification/export-solution.sh --raw "$RUNNER_TEMP/erdos782-proof.ndjson"
           sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson" | cut -d ' ' -f 1 > verification/results/solution.sha256
-      - name: Partition the proof export and compare its FC statement
-        id: partition
-        if: needs.prepare.outputs.split-export == 'true'
-        run: |
-          (cd lean && lake build +Comparator.Challenge)
-          bash verification/export-solution.sh --challenge --raw "$RUNNER_TEMP/fc-challenge.ndjson"
-          (cd verification/export-replay && python3 generate-parser.py && lake build)
-          python3 verification/export-replay/receipts.py prepare \
-             ./verification/export-replay/.lake/build/bin/export-replay \
-             "$RUNNER_TEMP/erdos782-proof.ndjson" "$RUNNER_TEMP/fc-challenge.ndjson" \
-             "$RUNNER_TEMP/export-replay-chunks" 3000000
-          python3 .github/scripts/recover-export-replay.py fresh-plan \
-             "$RUNNER_TEMP/export-replay-chunks/manifest.json" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
-          tar -C "$RUNNER_TEMP" -cf - export-replay-chunks |
-            zstd -T2 -3 -o "$RUNNER_TEMP/export-replay-chunks.tar.zst"
-          cat "$RUNNER_TEMP/actions-outputs.txt" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
-        if: needs.prepare.outputs.split-export == 'true'
-        with:
-          name: export-replay-chunks
-          path: ${{ runner.temp }}/export-replay-chunks.tar.zst
-          overwrite: true
-          compression-level: 0
-          retention-days: 2
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        if: needs.prepare.outputs.split-export == 'true'
-        with:
-          name: export-replay-manifest
-          path: ${{ runner.temp }}/export-replay-chunks/manifest.json
-          overwrite: true
-          retention-days: 90
-          if-no-files-found: error
       - name: Compare the proof against the pinned FC statement
         if: needs.prepare.outputs.check-compiled-declaration != 'true' && needs.prepare.outputs.split-export != 'true'
         env:
@@ -474,21 +454,108 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
-  replay-chunks:
+  export-proof:
     needs: [prepare, verify]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && needs.prepare.outputs.replay-items != '[]' && (needs.verify.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.prepare.outputs.split-export == 'true' && needs.prepare.outputs.prepared-run-id == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    outputs:
+      manifest-sha256: ${{ steps.partition.outputs.manifest-sha256 }}
+      fresh-export-plan: ${{ steps.partition.outputs.fresh-export-plan }}
+      fresh-export-items: ${{ steps.partition.outputs.fresh-export-items }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned Lean toolchain
+        working-directory: lean
+        run: |
+          installer="$RUNNER_TEMP/erdos782-elan-init.sh"
+          curl --proto '=https' --tlsv1.2 -fsSL https://elan.lean-lang.org/elan-init.sh -o "$installer"
+          sh "$installer" -y --default-toolchain none --no-modify-path
+          "$HOME/.elan/bin/elan" toolchain install "$(cat lean-toolchain)"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@v8
+        with:
+          name: lean-export-inputs
+          path: ${{ runner.temp }}
+      - name: Prepare the exporter runner
+        run: |
+          if ! command -v zstd >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
+          mkdir "$RUNNER_TEMP/lean-export-inputs"
+          tar --zstd -xf "$RUNNER_TEMP/lean-export-inputs.tar.zst" -C "$RUNNER_TEMP/lean-export-inputs"
+          rm "$RUNNER_TEMP/lean-export-inputs.tar.zst"
+          available=$(df -Pm / | awk 'NR == 2 {print $4}')
+          swap=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
+          extra=$(( (available - 16 * 1024) / 1024 ))
+          if (( extra > 40 )); then extra=40; fi
+          if (( extra >= 8 && swap < 16 * 1024**2 )); then
+            sudo fallocate -l "${extra}G" /var/tmp/lean-export.swap
+            sudo chmod 600 /var/tmp/lean-export.swap
+            sudo mkswap /var/tmp/lean-export.swap
+            sudo swapon /var/tmp/lean-export.swap
+          fi
+          df -h /
+          free -h
+      - name: Generate a new proof and challenge export
+        run: |
+          compiled="$RUNNER_TEMP/lean-export-inputs"
+          scope=(sudo systemd-run --quiet --scope -p MemoryHigh=12G -p MemoryMax=13G
+            -p MemorySwapMax=40G runuser -u "$(id -un)" --
+            env "PATH=$PATH" LEAN_NUM_THREADS=2 /usr/bin/time -v)
+          "${scope[@]}" bash verification/export-solution.sh --compiled-root "$compiled" --raw \
+            "$RUNNER_TEMP/erdos782-proof.ndjson"
+          "${scope[@]}" bash verification/export-solution.sh --challenge --compiled-root "$compiled" --raw \
+            "$RUNNER_TEMP/fc-challenge.ndjson"
+          rm -rf -- "$compiled"
+          sha256sum "$RUNNER_TEMP/erdos782-proof.ndjson" "$RUNNER_TEMP/fc-challenge.ndjson"
+      - name: Partition the proof export and compare its FC statement
+        id: partition
+        run: |
+          (cd verification/export-replay && python3 generate-parser.py && lake build)
+          python3 verification/export-replay/receipts.py prepare \
+             ./verification/export-replay/.lake/build/bin/export-replay \
+             "$RUNNER_TEMP/erdos782-proof.ndjson" "$RUNNER_TEMP/fc-challenge.ndjson" \
+             "$RUNNER_TEMP/export-replay-chunks" 3000000
+          python3 .github/scripts/recover-export-replay.py fresh-plan \
+             "$RUNNER_TEMP/export-replay-chunks/manifest.json" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+          tar -C "$RUNNER_TEMP" -cf - export-replay-chunks |
+            zstd -T2 -3 -o "$RUNNER_TEMP/export-replay-chunks.tar.zst"
+          cat "$RUNNER_TEMP/actions-outputs.txt" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: export-replay-chunks
+          path: ${{ runner.temp }}/export-replay-chunks.tar.zst
+          overwrite: true
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: export-replay-manifest
+          path: ${{ runner.temp }}/export-replay-chunks/manifest.json
+          overwrite: true
+          retention-days: 90
+          if-no-files-found: error
+
+  replay-chunks:
+    needs: [prepare, export-proof]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && needs.prepare.outputs.replay-items != '[]' && (needs.export-proof.result == 'success' || needs.prepare.outputs.prepared-run-id != '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
-        group: ${{ fromJSON(needs.prepare.outputs.replay-items || needs.prepare.outputs.prepared-groups || needs.verify.outputs.fresh-export-items || needs.verify.outputs.export-groups) }}
+        group: ${{ fromJSON(needs.prepare.outputs.replay-items || needs.prepare.outputs.prepared-groups || needs.export-proof.outputs.fresh-export-items) }}
     env:
       GROUP: ${{ matrix.group }}
-      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
+      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.export-proof.outputs.manifest-sha256 }}
       PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
-      FRESH_EXPORT_RUN: ${{ needs.verify.outputs.fresh-export-plan != '' && github.run_id || '' }}
+      FRESH_EXPORT_RUN: ${{ needs.export-proof.outputs.fresh-export-plan != '' && github.run_id || '' }}
       LEAN_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v7
@@ -555,31 +622,31 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: ${{ (needs.prepare.outputs.previous-replay-run != '' || needs.verify.outputs.fresh-export-plan != '') && 'export-replay-chunk' || 'export-replay-worker' }}-${{ matrix.group }}
+          name: ${{ (needs.prepare.outputs.previous-replay-run != '' || needs.export-proof.outputs.fresh-export-plan != '') && 'export-replay-chunk' || 'export-replay-worker' }}-${{ matrix.group }}
           path: ${{ runner.temp }}/export-replay-receipt/
           overwrite: true
           retention-days: 90
           if-no-files-found: ignore
 
   certify-full-export:
-    needs: [prepare, verify, replay-chunks]
+    needs: [prepare, export-proof, replay-chunks]
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.split-export == 'true' && (needs['replay-chunks'].result == 'success' || (needs.prepare.outputs.previous-replay-run != '' && needs.prepare.outputs.replay-items == '[]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.verify.outputs.manifest-sha256 }}
+      MANIFEST_SHA256: ${{ needs.prepare.outputs.prepared-manifest-sha256 || needs.export-proof.outputs.manifest-sha256 }}
       PREVIOUS_REPLAY_RUN: ${{ needs.prepare.outputs.previous-replay-run }}
       PREVIOUS_CHUNK_RUN: ${{ needs.prepare.outputs.previous-chunk-run }}
       PREVIOUS_SLICE_RUN: ${{ needs.prepare.outputs.previous-slice-run }}
       PREVIOUS_NESTED_RUN: ${{ needs.prepare.outputs.previous-nested-run }}
       COMPLETED_REPLAY_RUN: ${{ needs.prepare.outputs.completed-replay-run }}
-      FRESH_EXPORT_PLAN: ${{ needs.verify.outputs.fresh-export-plan }}
+      FRESH_EXPORT_PLAN: ${{ needs.export-proof.outputs.fresh-export-plan }}
       PREVIOUS_WORKERS: ${{ needs.prepare.outputs.previous-workers }}
       PREVIOUS_CHUNKS: ${{ needs.prepare.outputs.previous-chunks }}
       PREVIOUS_SLICES: ${{ needs.prepare.outputs.previous-slices }}
       PREVIOUS_NESTED: ${{ needs.prepare.outputs.previous-nested }}
-      RECOVERED_ITEMS: ${{ needs.prepare.outputs.recovered-items || needs.verify.outputs.fresh-export-items }}
-      REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan || needs.verify.outputs.fresh-export-plan }}
+      RECOVERED_ITEMS: ${{ needs.prepare.outputs.recovered-items || needs.export-proof.outputs.fresh-export-items }}
+      REPLAY_PLAN: ${{ needs.prepare.outputs.replay-plan || needs.export-proof.outputs.fresh-export-plan }}
     steps:
       - uses: actions/checkout@v7
         with:

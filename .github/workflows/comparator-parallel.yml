@@ -47,7 +47,42 @@ defaults:
     shell: bash
 
 jobs:
+  transfer-dependency-cache:
+    if: >-
+      github.event_name == 'push' && contains(github.event.head_commit.message, 'Transfer-Dependency-Cache: true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            lean/.lake/packages/Stacks/.lake/build
+            lean/.lake/packages/Mordell/.lake/build
+          key: fc782-deps-Linux-X64-e7013239ee55ef100b7c5d01ca81c68590a34798ad48d21279fb988172151297-44295233653-1
+          fail-on-cache-miss: true
+      - name: Pack compiled dependencies
+        run: |
+          if ! command -v zstd >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
+          cd lean/.lake/packages
+          tar -cf - Stacks/.lake/build | zstd -T2 -1 -o "$RUNNER_TEMP/wave-0-shard-90.tar.zst"
+          tar -cf - Mordell/.lake/build | zstd -T2 -1 -o "$RUNNER_TEMP/wave-0-shard-91.tar.zst"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fc782-wave-0-compiler-cache
+          path: ${{ runner.temp }}/wave-0-shard-9*.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
   prepare:
+    if: >-
+      github.event_name != 'push' || !contains(github.event.head_commit.message, 'Transfer-Dependency-Cache: true')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
